@@ -72,13 +72,53 @@ def _stable_text_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
 
 
+def _preview_text(value: str, limit: int = 160) -> dict[str, str]:
+    if len(value) <= limit:
+        return {"head": value, "tail": value}
+    half = max(limit // 2, 1)
+    return {"head": value[:half], "tail": value[-half:]}
+
+
+def _content_to_trace_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            elif item_type == "think":
+                think = item.get("think")
+                if isinstance(think, str) and think:
+                    parts.append(f"[think]{think}")
+            elif item_type == "image_url" or "image_url" in item:
+                parts.append("[image]")
+            elif item_type == "audio_url" or "audio_url" in item:
+                parts.append("[audio]")
+            elif isinstance(item_type, str) and item_type:
+                parts.append(f"[{item_type}]")
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False, sort_keys=True)
+    return str(content)
+
+
 def _summarize_content(content: Any) -> dict[str, Any]:
+    preview_text = _content_to_trace_text(content)
+    preview = _preview_text(preview_text)
     if isinstance(content, str):
         return {
             "kind": "str",
             "len": len(content),
             "hash": _stable_text_hash(content),
             "has_mnemosyne": "<Mnemosyne>" in content,
+            "preview_head": preview["head"],
+            "preview_tail": preview["tail"],
         }
     if isinstance(content, list):
         normalized = json.dumps(content, ensure_ascii=False, sort_keys=True)
@@ -87,6 +127,8 @@ def _summarize_content(content: Any) -> dict[str, Any]:
             "len": len(normalized),
             "hash": _stable_text_hash(normalized),
             "part_count": len(content),
+            "preview_head": preview["head"],
+            "preview_tail": preview["tail"],
         }
     if isinstance(content, dict):
         normalized = json.dumps(content, ensure_ascii=False, sort_keys=True)
@@ -94,8 +136,14 @@ def _summarize_content(content: Any) -> dict[str, Any]:
             "kind": "dict",
             "len": len(normalized),
             "hash": _stable_text_hash(normalized),
+            "preview_head": preview["head"],
+            "preview_tail": preview["tail"],
         }
-    return {"kind": type(content).__name__}
+    return {
+        "kind": type(content).__name__,
+        "preview_head": preview["head"],
+        "preview_tail": preview["tail"],
+    }
 
 
 def _summarize_contexts(contexts: Any) -> list[dict[str, Any]]:
@@ -111,6 +159,61 @@ def _summarize_contexts(contexts: Any) -> list[dict[str, Any]]:
         record.update(_summarize_content(item.get("content")))
         summary.append(record)
     return summary
+
+
+def _build_rendered_request_excerpt(req: ProviderRequest) -> dict[str, Any]:
+    parts: list[dict[str, Any]] = []
+
+    if isinstance(req.system_prompt, str) and req.system_prompt:
+        system_preview = _preview_text(req.system_prompt, limit=240)
+        parts.append(
+            {
+                "role": "system_prompt",
+                "len": len(req.system_prompt),
+                "hash": _stable_text_hash(req.system_prompt),
+                "head": system_preview["head"],
+                "tail": system_preview["tail"],
+            }
+        )
+
+    if isinstance(req.contexts, list):
+        for idx, item in enumerate(req.contexts):
+            if not isinstance(item, dict):
+                continue
+            text = _content_to_trace_text(item.get("content"))
+            preview = _preview_text(text, limit=180)
+            parts.append(
+                {
+                    "role": item.get("role", "?"),
+                    "idx": idx,
+                    "len": len(text),
+                    "hash": _stable_text_hash(text),
+                    "head": preview["head"],
+                    "tail": preview["tail"],
+                }
+            )
+
+    if isinstance(req.prompt, str) and req.prompt:
+        prompt_preview = _preview_text(req.prompt, limit=240)
+        parts.append(
+            {
+                "role": "prompt",
+                "len": len(req.prompt),
+                "hash": _stable_text_hash(req.prompt),
+                "head": prompt_preview["head"],
+                "tail": prompt_preview["tail"],
+            }
+        )
+
+    combined_text = "\n\n".join(
+        f"[{part['role']}#{part.get('idx', '-')}] {part['head']}" for part in parts
+    )
+    combined_preview = _preview_text(combined_text, limit=600)
+    return {
+        "parts": parts,
+        "combined_head": combined_preview["head"],
+        "combined_tail": combined_preview["tail"],
+    }
 
 
 def _append_request_trace(
@@ -151,9 +254,11 @@ def _append_request_trace(
                 "len": len(system_prompt),
                 "hash": _stable_text_hash(system_prompt),
                 "has_mnemosyne": "<Mnemosyne>" in system_prompt,
+                **_preview_text(system_prompt, limit=240),
             },
             "contexts_count": len(req.contexts) if isinstance(req.contexts, list) else 0,
             "contexts": _summarize_contexts(req.contexts),
+            "rendered_request": _build_rendered_request_excerpt(req),
         }
         if extra:
             payload["extra"] = extra
