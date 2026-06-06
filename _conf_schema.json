@@ -154,6 +154,14 @@
         "default":0,
         "minimum":-1
     },
+    "request_contexts_memory_len": {
+        "description":"发给LLM前保留的旧长期记忆注入数量",
+        "type":"int",
+        "hint":"仅影响实时请求清理，不影响历史记录或Milvus落盘；默认0表示每轮请求先清空旧Mnemosyne注入，再只发送本轮新检索结果",
+        "obvious_hint":true,
+        "default":0,
+        "minimum":-1
+    },
     "memory_injection_method":{
         "description":"记忆插入方式",
         "type":"string",

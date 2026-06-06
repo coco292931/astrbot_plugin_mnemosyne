@@ -68,6 +68,20 @@ def _build_cleaned_contexts_for_history(
     return copied_contexts
 
 
+def _resolve_request_contexts_memory_len(plugin: "Mnemosyne") -> int:
+    """
+    控制“发给 LLM 的实时请求”里保留多少历史 Mnemosyne 注入块。
+
+    默认值为 0：保留历史记录/落盘不受影响，但在真正发请求前先清空旧注入，
+    只留下本轮重新检索的长期记忆，减少 prompt cache 前缀被旧记忆拖着滚动。
+    """
+    value = plugin.config.get("request_contexts_memory_len", 0)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _stable_text_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
 
@@ -299,6 +313,9 @@ def _append_request_trace(
                 "memory_injection_position", "prepend"
             ),
             "contexts_memory_len": plugin.config.get("contexts_memory_len", 0),
+            "request_contexts_memory_len": _resolve_request_contexts_memory_len(
+                plugin
+            ),
             "top_k": plugin.config.get("top_k", DEFAULT_TOP_K),
             "prompt": {"len": len(prompt), "hash": _stable_text_hash(prompt)},
             "system_prompt": {
@@ -1343,7 +1360,7 @@ def clean_contexts(plugin: "Mnemosyne", req: ProviderRequest):
     删除长期记忆中的标签
     """
     injection_method = plugin.config.get("memory_injection_method", "user_prompt")
-    contexts_memory_len = plugin.config.get("contexts_memory_len", 0)
+    contexts_memory_len = _resolve_request_contexts_memory_len(plugin)
     if injection_method == "user_prompt":
         req.contexts = remove_mnemosyne_tags(req.contexts, contexts_memory_len)
     elif injection_method == "system_prompt":

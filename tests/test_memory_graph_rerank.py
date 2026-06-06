@@ -79,6 +79,7 @@ from core.memory_operations import (  # noqa: E402
     _build_lightweight_graph_metadata,
     _post_process_search_results,
     _resolve_sender_identity,
+    clean_contexts,
 )
 from core.tools import (  # noqa: E402
     extract_query_keywords,
@@ -96,6 +97,13 @@ from memory_manager.context_manager import ConversationContextManager  # noqa: E
 class _Plugin:
     def __init__(self, config: dict):
         self.config = config
+
+
+class _Request:
+    def __init__(self, contexts=None, system_prompt="", prompt=""):
+        self.contexts = contexts if contexts is not None else []
+        self.system_prompt = system_prompt
+        self.prompt = prompt
 
 
 class TestMemoryMetaHelpers(unittest.TestCase):
@@ -278,6 +286,71 @@ class TestRemoveSystemContent(unittest.TestCase):
 
         self.assertEqual(
             cleaned,
+            [
+                {"role": "system", "content": "persona setup"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+
+
+class TestCleanContexts(unittest.TestCase):
+    def test_request_cleanup_defaults_to_removing_old_user_prompt_memories(self) -> None:
+        plugin = _Plugin(
+            {
+                "memory_injection_method": "user_prompt",
+                "contexts_memory_len": -1,
+            }
+        )
+        req = _Request(
+            contexts=[
+                {"role": "user", "content": "old <Mnemosyne>memory-a</Mnemosyne> hi"},
+                {"role": "assistant", "content": "reply"},
+            ]
+        )
+
+        clean_contexts(plugin, req)
+
+        self.assertEqual(req.contexts[0]["content"], "old  hi")
+
+    def test_request_cleanup_can_preserve_old_user_prompt_memories_when_explicit(self) -> None:
+        plugin = _Plugin(
+            {
+                "memory_injection_method": "user_prompt",
+                "contexts_memory_len": -1,
+                "request_contexts_memory_len": -1,
+            }
+        )
+        req = _Request(
+            contexts=[
+                {"role": "user", "content": "old <Mnemosyne>memory-a</Mnemosyne> hi"},
+            ]
+        )
+
+        clean_contexts(plugin, req)
+
+        self.assertEqual(
+            req.contexts[0]["content"], "old <Mnemosyne>memory-a</Mnemosyne> hi"
+        )
+
+    def test_request_cleanup_defaults_to_removing_old_inserted_system_memories(self) -> None:
+        plugin = _Plugin(
+            {
+                "memory_injection_method": "insert_system_prompt",
+                "contexts_memory_len": -1,
+            }
+        )
+        req = _Request(
+            contexts=[
+                {"role": "system", "content": "persona setup"},
+                {"role": "system", "content": "<Mnemosyne>memory-a</Mnemosyne>"},
+                {"role": "user", "content": "hello"},
+            ]
+        )
+
+        clean_contexts(plugin, req)
+
+        self.assertEqual(
+            req.contexts,
             [
                 {"role": "system", "content": "persona setup"},
                 {"role": "user", "content": "hello"},
