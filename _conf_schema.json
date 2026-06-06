@@ -188,6 +188,12 @@
         "hint":"基于实体共现关系做 one-hop 关键词扩展，提升多跳相关记忆召回",
         "default":true
     },
+    "debug_request_trace_to_file":{
+        "description":"将请求结构诊断写入文件",
+        "type":"bool",
+        "hint":"在插件数据目录 diagnostics/request_trace.jsonl 记录每轮请求的 prompt/system/contexts 摘要，便于排查缓存命中问题",
+        "default":true
+    },
     "use_summary_time_anchor":{
         "description":"总结时注入绝对时间锚点",
         "type":"bool",

@@ -4,10 +4,13 @@ Mnemosyne 插件核心记忆操作逻辑
 """
 
 import asyncio
+import hashlib
+import json
 import re
 import time
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pymilvus.exceptions import MilvusException
@@ -63,6 +66,99 @@ def _build_cleaned_contexts_for_history(
     if injection_method == "insert_system_prompt":
         return remove_system_content(copied_contexts, contexts_memory_len)
     return copied_contexts
+
+
+def _stable_text_hash(value: str) -> str:
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _summarize_content(content: Any) -> dict[str, Any]:
+    if isinstance(content, str):
+        return {
+            "kind": "str",
+            "len": len(content),
+            "hash": _stable_text_hash(content),
+            "has_mnemosyne": "<Mnemosyne>" in content,
+        }
+    if isinstance(content, list):
+        normalized = json.dumps(content, ensure_ascii=False, sort_keys=True)
+        return {
+            "kind": "list",
+            "len": len(normalized),
+            "hash": _stable_text_hash(normalized),
+            "part_count": len(content),
+        }
+    if isinstance(content, dict):
+        normalized = json.dumps(content, ensure_ascii=False, sort_keys=True)
+        return {
+            "kind": "dict",
+            "len": len(normalized),
+            "hash": _stable_text_hash(normalized),
+        }
+    return {"kind": type(content).__name__}
+
+
+def _summarize_contexts(contexts: Any) -> list[dict[str, Any]]:
+    if not isinstance(contexts, list):
+        return []
+
+    summary: list[dict[str, Any]] = []
+    for idx, item in enumerate(contexts):
+        if not isinstance(item, dict):
+            summary.append({"idx": idx, "role": type(item).__name__})
+            continue
+        record = {"idx": idx, "role": item.get("role", "?")}
+        record.update(_summarize_content(item.get("content")))
+        summary.append(record)
+    return summary
+
+
+def _append_request_trace(
+    plugin: "Mnemosyne",
+    event: AstrMessageEvent,
+    req: ProviderRequest,
+    phase: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    if not plugin.config.get("debug_request_trace_to_file", True):
+        return
+    if not plugin.plugin_data_dir:
+        return
+
+    try:
+        trace_path = Path(plugin.plugin_data_dir) / "diagnostics" / "request_trace.jsonl"
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+
+        system_prompt = req.system_prompt if isinstance(req.system_prompt, str) else ""
+        prompt = req.prompt if isinstance(req.prompt, str) else ""
+        payload = {
+            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "phase": phase,
+            "session_id": getattr(event, "unified_msg_origin", None),
+            "memory_injection_method": plugin.config.get(
+                "memory_injection_method", "user_prompt"
+            ),
+            "memory_injection_position": plugin.config.get(
+                "memory_injection_position", "prepend"
+            ),
+            "contexts_memory_len": plugin.config.get("contexts_memory_len", 0),
+            "top_k": plugin.config.get("top_k", DEFAULT_TOP_K),
+            "prompt": {"len": len(prompt), "hash": _stable_text_hash(prompt)},
+            "system_prompt": {
+                "len": len(system_prompt),
+                "hash": _stable_text_hash(system_prompt),
+                "has_mnemosyne": "<Mnemosyne>" in system_prompt,
+            },
+            "contexts_count": len(req.contexts) if isinstance(req.contexts, list) else 0,
+            "contexts": _summarize_contexts(req.contexts),
+        }
+        if extra:
+            payload["extra"] = extra
+
+        with trace_path.open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.debug(f"写入请求调试日志失败: {exc}")
 
 
 def _extract_explicit_memory_content(prompt: str) -> str | None:
@@ -422,6 +518,7 @@ async def handle_query_memory(
 
     try:
         # --- 获取会话和人格信息 ---
+        _append_request_trace(plugin, event, req, "before_query")
         persona_id = await _get_persona_id(plugin, event)
         # 直接使用 unified_msg_origin 作为 session_id，确保多Bot场景下的记忆隔离
         session_id = event.unified_msg_origin
@@ -573,7 +670,7 @@ async def handle_query_memory(
 
             # 3. 格式化结果并注入到提示中
             if detailed_results:
-                _format_and_inject_memory(plugin, detailed_results, req)
+                _format_and_inject_memory(plugin, event, detailed_results, req)
 
         except Exception as e:
             logger.error(f"处理长期记忆 RAG 查询时发生错误: {e}", exc_info=True)
@@ -972,7 +1069,10 @@ def _process_milvus_hits(hits) -> list[dict[str, Any]]:
 
 # LLM 响应处理相关函数
 def _format_and_inject_memory(
-    plugin: "Mnemosyne", detailed_results: list[dict], req: ProviderRequest
+    plugin: "Mnemosyne",
+    event: AstrMessageEvent,
+    detailed_results: list[dict],
+    req: ProviderRequest,
 ):
     """
     格式化搜索结果并注入到 ProviderRequest 中。
@@ -1051,6 +1151,18 @@ def _format_and_inject_memory(
         )
         current_prompt = req.prompt if isinstance(req.prompt, str) else ""
         req.prompt = long_memory + "\n" + current_prompt
+
+    _append_request_trace(
+        plugin,
+        event,
+        req,
+        "after_injection",
+        extra={
+            "memory_len": len(long_memory),
+            "memory_hash": _stable_text_hash(long_memory),
+            "memory_items": len(detailed_results),
+        },
+    )
 
 
 # 删除补充的长期记忆函数
