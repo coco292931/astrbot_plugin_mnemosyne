@@ -422,6 +422,50 @@ class TestPostProcessSearchResults(unittest.TestCase):
         self.assertEqual(ranked_without_graph[0]["content"], "neutral record")
         self.assertEqual(ranked_with_graph[0]["content"], "memory about bravo")
 
+    def test_no_keyword_path_uses_stable_order(self) -> None:
+        plugin = _Plugin(
+            {"use_participant_filtering": False, "use_lightweight_memory_graph": False}
+        )
+        detailed_results = [
+            {"content": "later record", "_distance": 0.2, "create_time": 100},
+            {"content": "nearer record", "_distance": 0.1, "create_time": 50},
+            {"content": "same distance newer", "_distance": 0.1, "create_time": 200},
+        ]
+
+        ranked = _post_process_search_results(
+            plugin=plugin,
+            detailed_results=detailed_results,
+            query_text="a",
+            sender_id=None,
+        )
+
+        self.assertEqual(
+            [item["content"] for item in ranked],
+            ["same distance newer", "nearer record", "later record"],
+        )
+
+    def test_keyword_ties_use_stable_tiebreaker(self) -> None:
+        plugin = _Plugin(
+            {"use_participant_filtering": False, "use_lightweight_memory_graph": False}
+        )
+        detailed_results = [
+            {"content": "alpha older", "_distance": 0.1, "create_time": 100},
+            {"content": "alpha newer", "_distance": 0.1, "create_time": 200},
+            {"content": "alpha far", "_distance": 0.8, "create_time": 300},
+        ]
+
+        ranked = _post_process_search_results(
+            plugin=plugin,
+            detailed_results=detailed_results,
+            query_text="alpha",
+            sender_id=None,
+        )
+
+        self.assertEqual(
+            [item["content"] for item in ranked],
+            ["alpha newer", "alpha older", "alpha far"],
+        )
+
 
 class _Sender:
     def __init__(self, nickname=None, user_id=None):

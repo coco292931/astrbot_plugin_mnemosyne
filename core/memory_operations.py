@@ -161,6 +161,57 @@ def _summarize_contexts(contexts: Any) -> list[dict[str, Any]]:
     return summary
 
 
+def _safe_numeric(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_result_identifier(result: dict[str, Any]) -> str:
+    for key in ("memory_id", "_hit_id", "id"):
+        value = result.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _build_result_trace_summary(
+    detailed_results: list[dict[str, Any]], limit: int = 20
+) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for idx, result in enumerate(detailed_results[:limit]):
+        content = strip_memory_meta(str(result.get("content", "")))
+        preview = _preview_text(content, limit=120)
+        summary.append(
+            {
+                "idx": idx,
+                "memory_id": _coerce_result_identifier(result),
+                "create_time": result.get("create_time"),
+                "distance": _safe_numeric(result.get("_distance")),
+                "content_hash": _stable_text_hash(content),
+                "content_len": len(content),
+                "content_head": preview["head"],
+                "content_tail": preview["tail"],
+            }
+        )
+    return summary
+
+
+def _stable_result_sort_key(result: dict[str, Any]) -> tuple[Any, ...]:
+    content = strip_memory_meta(str(result.get("content", "")))
+    return (
+        _safe_numeric(result.get("_distance")),
+        -_safe_numeric(result.get("create_time")),
+        _coerce_result_identifier(result),
+        _stable_text_hash(content),
+        content,
+    )
+
+
 def _build_rendered_request_excerpt(req: ProviderRequest) -> dict[str, Any]:
     parts: list[dict[str, Any]] = []
 
@@ -584,7 +635,7 @@ def _post_process_search_results(
     # 关键词 + 图谱扩展重排
     keywords = extract_query_keywords(query_text, min_token_len=2)
     if not keywords:
-        return prepared
+        return sorted(prepared, key=_stable_result_sort_key)
 
     use_graph = plugin.config.get("use_lightweight_memory_graph", True)
     expanded = _expand_graph_keywords(keywords, prepared) if use_graph else []
@@ -609,9 +660,15 @@ def _post_process_search_results(
         scored.append((keyword_hits, _semantic_score(item), item))
 
     if any(hit > 0 for hit, _, _ in scored):
-        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        scored.sort(
+            key=lambda x: (
+                -x[0],
+                -x[1],
+                *_stable_result_sort_key(x[2]),
+            )
+        )
         return [item for _, _, item in scored]
-    return prepared
+    return sorted(prepared, key=_stable_result_sort_key)
 
 
 async def handle_query_memory(
@@ -1150,6 +1207,9 @@ def _process_milvus_hits(hits) -> list[dict[str, Any]]:
                                 distance = getattr(hit, "distance", None)
                                 if isinstance(distance, (int, float)):
                                     entity_data["_distance"] = float(distance)
+                                hit_id = getattr(hit, "id", None)
+                                if hit_id is not None:
+                                    entity_data["_hit_id"] = hit_id
                             detailed_results.append(entity_data)
                         else:
                             # 如果 entity 存在但提取的数据为空，可能是数据结构问题
@@ -1272,6 +1332,7 @@ def _format_and_inject_memory(
             "memory_len": len(long_memory),
             "memory_hash": _stable_text_hash(long_memory),
             "memory_items": len(detailed_results),
+            "memory_results": _build_result_trace_summary(detailed_results),
         },
     )
 
