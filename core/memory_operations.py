@@ -121,13 +121,16 @@ def _append_request_trace(
     extra: dict[str, Any] | None = None,
 ) -> None:
     if not plugin.config.get("debug_request_trace_to_file", True):
+        logger.info("Mnemosyne 请求诊断已禁用：debug_request_trace_to_file=False")
         return
     if not plugin.plugin_data_dir:
+        logger.warning("Mnemosyne 请求诊断未写入：plugin_data_dir 为空")
         return
 
     try:
         trace_path = Path(plugin.plugin_data_dir) / "diagnostics" / "request_trace.jsonl"
         trace_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Mnemosyne 请求诊断写入目标: {trace_path}")
 
         system_prompt = req.system_prompt if isinstance(req.system_prompt, str) else ""
         prompt = req.prompt if isinstance(req.prompt, str) else ""
@@ -157,8 +160,11 @@ def _append_request_trace(
 
         with trace_path.open("a", encoding="utf-8") as fp:
             fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        logger.info(
+            f"Mnemosyne 请求诊断已写入: phase={phase}, session_id={getattr(event, 'unified_msg_origin', None)}"
+        )
     except Exception as exc:
-        logger.debug(f"写入请求调试日志失败: {exc}")
+        logger.warning(f"写入请求调试日志失败: {exc}")
 
 
 def _extract_explicit_memory_content(prompt: str) -> str | None:

@@ -393,6 +393,11 @@ class Mnemosyne(Star):
                 plugin_data_dir = StarTools.get_data_dir()
                 self.plugin_data_dir = str(plugin_data_dir) if plugin_data_dir else None
                 logger.info(f"已获取插件数据目录: {plugin_data_dir}")
+                logger.info(
+                    "Mnemosyne 请求诊断状态: "
+                    f"debug_request_trace_to_file={self.config.get('debug_request_trace_to_file', True)}, "
+                    f"plugin_data_dir={self.plugin_data_dir}"
+                )
             except Exception as e:
                 logger.warning(f"无法获取插件数据目录: {e}，将使用后备方案")
                 self.plugin_data_dir = None
