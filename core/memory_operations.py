@@ -6,6 +6,7 @@ Mnemosyne 插件核心记忆操作逻辑
 import asyncio
 import re
 import time
+from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +46,23 @@ if TYPE_CHECKING:
     from ..main import Mnemosyne
 
 logger = LogManager.GetLogger(__name__)
+
+
+def _build_cleaned_contexts_for_history(
+    plugin: "Mnemosyne", contexts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """
+    为插件内部历史记录生成一份清理后的上下文副本，避免直接修改真实请求对象。
+    """
+    injection_method = plugin.config.get("memory_injection_method", "user_prompt")
+    contexts_memory_len = plugin.config.get("contexts_memory_len", 0)
+    copied_contexts = deepcopy(contexts) if isinstance(contexts, list) else []
+
+    if injection_method == "user_prompt":
+        return remove_mnemosyne_tags(copied_contexts, contexts_memory_len)
+    if injection_method == "insert_system_prompt":
+        return remove_system_content(copied_contexts, contexts_memory_len)
+    return copied_contexts
 
 
 def _extract_explicit_memory_content(prompt: str) -> str | None:
@@ -435,12 +453,12 @@ async def handle_query_memory(
             logger.warning("context_manager 或 msg_counter 不可用，跳过记忆查询")
             return
 
-        # 在最早阶段清理 Mnemosyne 标签，避免将带标签/异常结构的 contexts 写入会话历史。
-        clean_contexts(plugin, req)
-
         # 判断是否在历史会话管理器中，如果不在，则进行初始化
         if session_id not in plugin.context_manager.conversations:
-            plugin.context_manager.init_conv(session_id, req.contexts, event)
+            cleaned_contexts = _build_cleaned_contexts_for_history(
+                plugin, req.contexts
+            )
+            plugin.context_manager.init_conv(session_id, cleaned_contexts, event)
 
         # 生成供“插件内部记忆/向量化”使用的安全用户文本：
         # - AstrBot 可能在纯图片消息时令 prompt=None，此处用占位符避免报错

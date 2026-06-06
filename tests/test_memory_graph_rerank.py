@@ -74,6 +74,7 @@ def _ensure_dependency_stubs() -> None:
 _ensure_dependency_stubs()
 
 from core.memory_operations import (  # noqa: E402
+    _build_cleaned_contexts_for_history,
     _build_identity_prefixed_user_text,
     _build_lightweight_graph_metadata,
     _post_process_search_results,
@@ -135,6 +136,42 @@ class TestMemoryMetaHelpers(unittest.TestCase):
         self.assertEqual(plain, "x" * 8)
         self.assertTrue(suffixed_changed)
         self.assertEqual(suffixed, "x" * 8 + "…(truncated)")
+
+
+class TestHistoryContextCleaning(unittest.TestCase):
+    def test_build_cleaned_contexts_for_history_does_not_mutate_source(self) -> None:
+        plugin = _Plugin({"memory_injection_method": "user_prompt", "contexts_memory_len": 0})
+        source_contexts = [
+            {"role": "user", "content": "hi <Mnemosyne>old</Mnemosyne> there"}
+        ]
+
+        cleaned = _build_cleaned_contexts_for_history(plugin, source_contexts)
+
+        self.assertEqual(cleaned[0]["content"], "hi  there")
+        self.assertEqual(
+            source_contexts[0]["content"], "hi <Mnemosyne>old</Mnemosyne> there"
+        )
+
+    def test_build_cleaned_contexts_for_history_prunes_only_mnemosyne_system_messages(self) -> None:
+        plugin = _Plugin(
+            {"memory_injection_method": "insert_system_prompt", "contexts_memory_len": 0}
+        )
+        source_contexts = [
+            {"role": "system", "content": "persona setup"},
+            {"role": "system", "content": "<Mnemosyne>old</Mnemosyne>"},
+            {"role": "user", "content": "hello"},
+        ]
+
+        cleaned = _build_cleaned_contexts_for_history(plugin, source_contexts)
+
+        self.assertEqual(
+            cleaned,
+            [
+                {"role": "system", "content": "persona setup"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        self.assertEqual(source_contexts[1]["content"], "<Mnemosyne>old</Mnemosyne>")
 
 
 class TestRemoveMnemosyneTags(unittest.TestCase):
