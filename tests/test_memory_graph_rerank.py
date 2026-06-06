@@ -88,6 +88,7 @@ from core.tools import (  # noqa: E402
     strip_memory_meta,
     truncate_for_embedding,
 )
+from memory_manager.context_manager import ConversationContextManager  # noqa: E402
 
 
 class _Plugin:
@@ -206,6 +207,39 @@ class TestRemoveMnemosyneTags(unittest.TestCase):
         self.assertIs(cleaned[0]["content"], content_parts)
         self.assertTrue(cleaned[0]["_no_save"])
         self.assertEqual(cleaned[0]["custom"], "preserved")
+
+
+class TestConversationContextManager(unittest.TestCase):
+    def test_init_conv_does_not_alias_provider_contexts(self) -> None:
+        manager = ConversationContextManager()
+        provider_contexts = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "old message"}],
+            }
+        ]
+
+        manager.init_conv("session-1", provider_contexts, event=None)
+        manager.add_message("session-1", "user", "new message")
+
+        self.assertEqual(len(provider_contexts), 1)
+        self.assertEqual(provider_contexts[0]["content"][0]["text"], "old message")
+
+    def test_get_history_returns_snapshot(self) -> None:
+        manager = ConversationContextManager()
+        manager.init_conv(
+            "session-1",
+            [{"role": "user", "content": [{"type": "text", "text": "old message"}]}],
+            event=None,
+        )
+
+        history = manager.get_history("session-1")
+        history.append({"role": "assistant", "content": "external"})
+        history[0]["content"][0]["text"] = "mutated"
+
+        fresh_history = manager.get_history("session-1")
+        self.assertEqual(len(fresh_history), 1)
+        self.assertEqual(fresh_history[0]["content"][0]["text"], "old message")
 
 
 class TestLightweightGraphMetadata(unittest.TestCase):

@@ -1,5 +1,6 @@
 import threading
 import time
+from copy import deepcopy
 from datetime import datetime
 
 from astrbot.api.event import AstrMessageEvent
@@ -31,7 +32,7 @@ class ConversationContextManager:
             if session_id in self.conversations:
                 return
             self.conversations[session_id] = {}
-            self.conversations[session_id]["history"] = contexts
+            self.conversations[session_id]["history"] = deepcopy(contexts)
             self.conversations[session_id]["event"] = event
             # 初始化最后一次总结的时间，这里在重启的时候会丢失，但是先不管了
             # 重启了计时器就重启，用户再一次对话再重启计时器，emmmm，之后再改了，加个TODO
@@ -100,7 +101,7 @@ class ConversationContextManager:
         """
         with self._lock:
             if session_id in self.conversations:
-                return self.conversations[session_id]["history"]
+                return deepcopy(self.conversations[session_id]["history"])
             else:
                 return []
 
@@ -110,6 +111,6 @@ class ConversationContextManager:
         """
         with self._lock:
             if session_id in self.conversations:
-                return self.conversations[session_id]
+                return deepcopy(self.conversations[session_id])
             else:
                 return {}
