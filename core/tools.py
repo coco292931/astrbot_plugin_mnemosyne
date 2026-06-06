@@ -210,18 +210,24 @@ def remove_system_content(
     contents: list[dict[str, str]], contexts_memory_len: int = 0
 ) -> list[dict[str, str]]:
     """
-    从LLM上下文中移除较旧的系统提示 ('role'='system' 的消息)，
-    保留指定数量的最新的 system 消息，并维持整体消息顺序。
+    从LLM上下文中移除较旧的 Mnemosyne 系统提示，只处理带有
+    <Mnemosyne>...</Mnemosyne> 标签的 system 消息，避免误删其他 system 上下文。
     """
     if not isinstance(contents, list):
         return []
     if contexts_memory_len < 0:
         return contents
 
+    compiled_regex = re.compile(r"<Mnemosyne>.*?</Mnemosyne>", re.DOTALL)
     system_message_indices = [
         i
         for i, msg in enumerate(contents)
-        if isinstance(msg, dict) and msg.get("role") == "system"
+        if (
+            isinstance(msg, dict)
+            and msg.get("role") == "system"
+            and isinstance(msg.get("content"), str)
+            and compiled_regex.search(msg["content"])
+        )
     ]
     indices_to_remove: set[int] = set()
     num_system_messages = len(system_message_indices)

@@ -83,6 +83,7 @@ from core.tools import (  # noqa: E402
     extract_query_keywords,
     pack_memory_content,
     remove_mnemosyne_tags,
+    remove_system_content,
     resolve_max_prompt_chars,
     split_memory_content_meta,
     strip_memory_meta,
@@ -207,6 +208,44 @@ class TestRemoveMnemosyneTags(unittest.TestCase):
         self.assertIs(cleaned[0]["content"], content_parts)
         self.assertTrue(cleaned[0]["_no_save"])
         self.assertEqual(cleaned[0]["custom"], "preserved")
+
+
+class TestRemoveSystemContent(unittest.TestCase):
+    def test_preserves_non_mnemosyne_system_messages(self) -> None:
+        contents = [
+            {"role": "system", "content": "persona setup"},
+            {"role": "system", "content": "<Mnemosyne>old</Mnemosyne>"},
+            {"role": "system", "content": "<Mnemosyne>new</Mnemosyne>"},
+            {"role": "user", "content": "hello"},
+        ]
+
+        cleaned = remove_system_content(contents, contexts_memory_len=1)
+
+        self.assertEqual(
+            cleaned,
+            [
+                {"role": "system", "content": "persona setup"},
+                {"role": "system", "content": "<Mnemosyne>new</Mnemosyne>"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+
+    def test_zero_retention_removes_only_mnemosyne_system_messages(self) -> None:
+        contents = [
+            {"role": "system", "content": "persona setup"},
+            {"role": "system", "content": "<Mnemosyne>old</Mnemosyne>"},
+            {"role": "user", "content": "hello"},
+        ]
+
+        cleaned = remove_system_content(contents, contexts_memory_len=0)
+
+        self.assertEqual(
+            cleaned,
+            [
+                {"role": "system", "content": "persona setup"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
 
 
 class TestConversationContextManager(unittest.TestCase):
