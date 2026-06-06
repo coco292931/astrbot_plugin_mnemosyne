@@ -41,8 +41,8 @@ from .memory_manager.vector_db.milvus_manager import MilvusManager
     "Mnemosyne",
     "lxfight",
     "一个AstrBot插件，实现基于RAG技术的长期记忆功能。",
-    "2.1.0",
-    "https://github.com/lxfight/astrbot_plugin_mnemosyne",
+    "2.1.0-test1",
+    "https://github.com/coco292931/astrbot_plugin_mnemosyne",
 )
 class Mnemosyne(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
