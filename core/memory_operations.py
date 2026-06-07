@@ -51,6 +51,10 @@ if TYPE_CHECKING:
 logger = LogManager.GetLogger(__name__)
 
 
+def _get_plugin_version(plugin: "Mnemosyne") -> str:
+    return str(getattr(plugin, "PLUGIN_VERSION", "unknown"))
+
+
 def _build_cleaned_contexts_for_history(
     plugin: "Mnemosyne", contexts: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -281,6 +285,59 @@ def _build_rendered_request_excerpt(req: ProviderRequest) -> dict[str, Any]:
     }
 
 
+def _build_context_length_breakdown(
+    contexts: Any, system_prompt: str, prompt: str
+) -> dict[str, int]:
+    if not isinstance(contexts, list):
+        contexts = []
+
+    user_len = 0
+    assistant_len = 0
+    mnemosyne_system_len = 0
+    other_system_len = 0
+    other_role_len = 0
+
+    for item in contexts:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role", "?")
+        text = _content_to_trace_text(item.get("content"))
+        text_len = len(text)
+        if role == "user":
+            user_len += text_len
+        elif role == "assistant":
+            assistant_len += text_len
+        elif role == "system":
+            if "<Mnemosyne>" in text:
+                mnemosyne_system_len += text_len
+            else:
+                other_system_len += text_len
+        else:
+            other_role_len += text_len
+
+    return {
+        "prompt_len": len(prompt),
+        "system_prompt_len": len(system_prompt),
+        "user_context_len": user_len,
+        "assistant_context_len": assistant_len,
+        "mnemosyne_system_context_len": mnemosyne_system_len,
+        "other_system_context_len": other_system_len,
+        "other_role_context_len": other_role_len,
+        "contexts_total_len": user_len
+        + assistant_len
+        + mnemosyne_system_len
+        + other_system_len
+        + other_role_len,
+        "request_total_len": len(prompt)
+        + len(system_prompt)
+        + user_len
+        + assistant_len
+        + mnemosyne_system_len
+        + other_system_len
+        + other_role_len,
+    }
+
+
 def _append_request_trace(
     plugin: "Mnemosyne",
     event: AstrMessageEvent,
@@ -305,6 +362,7 @@ def _append_request_trace(
         payload = {
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             "phase": phase,
+            "plugin_version": _get_plugin_version(plugin),
             "session_id": getattr(event, "unified_msg_origin", None),
             "memory_injection_method": plugin.config.get(
                 "memory_injection_method", "user_prompt"
@@ -326,6 +384,9 @@ def _append_request_trace(
             },
             "contexts_count": len(req.contexts) if isinstance(req.contexts, list) else 0,
             "contexts": _summarize_contexts(req.contexts),
+            "length_breakdown": _build_context_length_breakdown(
+                req.contexts, system_prompt, prompt
+            ),
             "rendered_request": _build_rendered_request_excerpt(req),
         }
         if extra:
