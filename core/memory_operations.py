@@ -51,6 +51,19 @@ if TYPE_CHECKING:
 logger = LogManager.GetLogger(__name__)
 
 
+def _append_to_extra_user_content_parts(req: ProviderRequest, text: str) -> bool:
+    parts = getattr(req, "extra_user_content_parts", None)
+    if not isinstance(parts, list) or not parts:
+        return False
+
+    sample = parts[0]
+    try:
+        parts.append(type(sample)(text=text))
+        return True
+    except Exception:
+        return False
+
+
 def _build_cleaned_contexts_for_history(
     plugin: "Mnemosyne", contexts: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -1250,11 +1263,14 @@ def _format_and_inject_memory(
             req.system_prompt = long_memory + current_system_prompt
 
     elif injection_method == "insert_system_prompt":
-        payload = {"role": "system", "content": long_memory}
-        if injection_position == "append":
-            req.contexts.append(payload)
+        if _append_to_extra_user_content_parts(req, long_memory):
+            logger.info("长期记忆已注入 extra_user_content_parts。")
         else:
-            req.contexts.insert(0, payload)
+            payload = {"role": "system", "content": long_memory}
+            if injection_position == "append":
+                req.contexts.append(payload)
+            else:
+                req.contexts.insert(0, payload)
 
     else:
         logger.warning(
