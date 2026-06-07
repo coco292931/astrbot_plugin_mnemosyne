@@ -51,10 +51,6 @@ if TYPE_CHECKING:
 logger = LogManager.GetLogger(__name__)
 
 
-def _get_plugin_version(plugin: "Mnemosyne") -> str:
-    return str(getattr(plugin, "PLUGIN_VERSION", "unknown"))
-
-
 def _build_cleaned_contexts_for_history(
     plugin: "Mnemosyne", contexts: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -70,20 +66,6 @@ def _build_cleaned_contexts_for_history(
     if injection_method == "insert_system_prompt":
         return remove_system_content(copied_contexts, contexts_memory_len)
     return copied_contexts
-
-
-def _resolve_request_contexts_memory_len(plugin: "Mnemosyne") -> int:
-    """
-    控制“发给 LLM 的实时请求”里保留多少历史 Mnemosyne 注入块。
-
-    默认值为 0：保留历史记录/落盘不受影响，但在真正发请求前先清空旧注入，
-    只留下本轮重新检索的长期记忆，减少 prompt cache 前缀被旧记忆拖着滚动。
-    """
-    value = plugin.config.get("request_contexts_memory_len", 0)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _stable_text_hash(value: str) -> str:
@@ -179,57 +161,6 @@ def _summarize_contexts(contexts: Any) -> list[dict[str, Any]]:
     return summary
 
 
-def _safe_numeric(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _coerce_result_identifier(result: dict[str, Any]) -> str:
-    for key in ("memory_id", "_hit_id", "id"):
-        value = result.get(key)
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            return text
-    return ""
-
-
-def _build_result_trace_summary(
-    detailed_results: list[dict[str, Any]], limit: int = 20
-) -> list[dict[str, Any]]:
-    summary: list[dict[str, Any]] = []
-    for idx, result in enumerate(detailed_results[:limit]):
-        content = strip_memory_meta(str(result.get("content", "")))
-        preview = _preview_text(content, limit=120)
-        summary.append(
-            {
-                "idx": idx,
-                "memory_id": _coerce_result_identifier(result),
-                "create_time": result.get("create_time"),
-                "distance": _safe_numeric(result.get("_distance")),
-                "content_hash": _stable_text_hash(content),
-                "content_len": len(content),
-                "content_head": preview["head"],
-                "content_tail": preview["tail"],
-            }
-        )
-    return summary
-
-
-def _stable_result_sort_key(result: dict[str, Any]) -> tuple[Any, ...]:
-    content = strip_memory_meta(str(result.get("content", "")))
-    return (
-        _safe_numeric(result.get("_distance")),
-        -_safe_numeric(result.get("create_time")),
-        _coerce_result_identifier(result),
-        _stable_text_hash(content),
-        content,
-    )
-
-
 def _build_rendered_request_excerpt(req: ProviderRequest) -> dict[str, Any]:
     parts: list[dict[str, Any]] = []
 
@@ -285,59 +216,6 @@ def _build_rendered_request_excerpt(req: ProviderRequest) -> dict[str, Any]:
     }
 
 
-def _build_context_length_breakdown(
-    contexts: Any, system_prompt: str, prompt: str
-) -> dict[str, int]:
-    if not isinstance(contexts, list):
-        contexts = []
-
-    user_len = 0
-    assistant_len = 0
-    mnemosyne_system_len = 0
-    other_system_len = 0
-    other_role_len = 0
-
-    for item in contexts:
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role", "?")
-        text = _content_to_trace_text(item.get("content"))
-        text_len = len(text)
-        if role == "user":
-            user_len += text_len
-        elif role == "assistant":
-            assistant_len += text_len
-        elif role == "system":
-            if "<Mnemosyne>" in text:
-                mnemosyne_system_len += text_len
-            else:
-                other_system_len += text_len
-        else:
-            other_role_len += text_len
-
-    return {
-        "prompt_len": len(prompt),
-        "system_prompt_len": len(system_prompt),
-        "user_context_len": user_len,
-        "assistant_context_len": assistant_len,
-        "mnemosyne_system_context_len": mnemosyne_system_len,
-        "other_system_context_len": other_system_len,
-        "other_role_context_len": other_role_len,
-        "contexts_total_len": user_len
-        + assistant_len
-        + mnemosyne_system_len
-        + other_system_len
-        + other_role_len,
-        "request_total_len": len(prompt)
-        + len(system_prompt)
-        + user_len
-        + assistant_len
-        + mnemosyne_system_len
-        + other_system_len
-        + other_role_len,
-    }
-
-
 def _append_request_trace(
     plugin: "Mnemosyne",
     event: AstrMessageEvent,
@@ -362,7 +240,6 @@ def _append_request_trace(
         payload = {
             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
             "phase": phase,
-            "plugin_version": _get_plugin_version(plugin),
             "session_id": getattr(event, "unified_msg_origin", None),
             "memory_injection_method": plugin.config.get(
                 "memory_injection_method", "user_prompt"
@@ -371,9 +248,6 @@ def _append_request_trace(
                 "memory_injection_position", "prepend"
             ),
             "contexts_memory_len": plugin.config.get("contexts_memory_len", 0),
-            "request_contexts_memory_len": _resolve_request_contexts_memory_len(
-                plugin
-            ),
             "top_k": plugin.config.get("top_k", DEFAULT_TOP_K),
             "prompt": {"len": len(prompt), "hash": _stable_text_hash(prompt)},
             "system_prompt": {
@@ -384,9 +258,6 @@ def _append_request_trace(
             },
             "contexts_count": len(req.contexts) if isinstance(req.contexts, list) else 0,
             "contexts": _summarize_contexts(req.contexts),
-            "length_breakdown": _build_context_length_breakdown(
-                req.contexts, system_prompt, prompt
-            ),
             "rendered_request": _build_rendered_request_excerpt(req),
         }
         if extra:
@@ -713,7 +584,7 @@ def _post_process_search_results(
     # 关键词 + 图谱扩展重排
     keywords = extract_query_keywords(query_text, min_token_len=2)
     if not keywords:
-        return sorted(prepared, key=_stable_result_sort_key)
+        return prepared
 
     use_graph = plugin.config.get("use_lightweight_memory_graph", True)
     expanded = _expand_graph_keywords(keywords, prepared) if use_graph else []
@@ -738,15 +609,9 @@ def _post_process_search_results(
         scored.append((keyword_hits, _semantic_score(item), item))
 
     if any(hit > 0 for hit, _, _ in scored):
-        scored.sort(
-            key=lambda x: (
-                -x[0],
-                -x[1],
-                *_stable_result_sort_key(x[2]),
-            )
-        )
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return [item for _, _, item in scored]
-    return sorted(prepared, key=_stable_result_sort_key)
+    return prepared
 
 
 async def handle_query_memory(
@@ -1285,9 +1150,6 @@ def _process_milvus_hits(hits) -> list[dict[str, Any]]:
                                 distance = getattr(hit, "distance", None)
                                 if isinstance(distance, (int, float)):
                                     entity_data["_distance"] = float(distance)
-                                hit_id = getattr(hit, "id", None)
-                                if hit_id is not None:
-                                    entity_data["_hit_id"] = hit_id
                             detailed_results.append(entity_data)
                         else:
                             # 如果 entity 存在但提取的数据为空，可能是数据结构问题
@@ -1410,7 +1272,6 @@ def _format_and_inject_memory(
             "memory_len": len(long_memory),
             "memory_hash": _stable_text_hash(long_memory),
             "memory_items": len(detailed_results),
-            "memory_results": _build_result_trace_summary(detailed_results),
         },
     )
 
@@ -1421,7 +1282,7 @@ def clean_contexts(plugin: "Mnemosyne", req: ProviderRequest):
     删除长期记忆中的标签
     """
     injection_method = plugin.config.get("memory_injection_method", "user_prompt")
-    contexts_memory_len = _resolve_request_contexts_memory_len(plugin)
+    contexts_memory_len = plugin.config.get("contexts_memory_len", 0)
     if injection_method == "user_prompt":
         req.contexts = remove_mnemosyne_tags(req.contexts, contexts_memory_len)
     elif injection_method == "system_prompt":

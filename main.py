@@ -20,8 +20,6 @@ from astrbot.core.provider.provider import EmbeddingProvider
 
 from .web_api import MnemosyneWebApi, PLUGIN_NAME
 
-PLUGIN_VERSION = "2.1.0-test3"
-
 # --- 插件内部模块导入 ---
 from .core import (
     commands,  # 导入命令处理实现模块
@@ -43,12 +41,10 @@ from .memory_manager.vector_db.milvus_manager import MilvusManager
     "Mnemosyne",
     "lxfight",
     "一个AstrBot插件，实现基于RAG技术的长期记忆功能。",
-    PLUGIN_VERSION,
+    "2.1.0-test2",
     "https://github.com/coco292931/astrbot_plugin_mnemosyne",
 )
 class Mnemosyne(Star):
-    PLUGIN_VERSION = PLUGIN_VERSION
-
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
@@ -86,7 +82,7 @@ class Mnemosyne(Star):
         if self.platform_blacklist:
             logger.info(f"长期记忆已为以下平台禁用: {sorted(self.platform_blacklist)}")
 
-        logger.info(f"开始初始化 Mnemosyne 插件... version={PLUGIN_VERSION}")
+        logger.info("开始初始化 Mnemosyne 插件...")
         # 启动后台异步初始化，但不包括 Embedding Provider 的初始化
         asyncio.create_task(self._initialize_plugin_async())
 
@@ -399,12 +395,7 @@ class Mnemosyne(Star):
                 logger.info(f"已获取插件数据目录: {plugin_data_dir}")
                 logger.info(
                     "Mnemosyne 请求诊断状态: "
-                    f"version={PLUGIN_VERSION}, "
                     f"debug_request_trace_to_file={self.config.get('debug_request_trace_to_file', True)}, "
-                    f"contexts_memory_len={self.config.get('contexts_memory_len', 0)}, "
-                    f"request_contexts_memory_len={self.config.get('request_contexts_memory_len', 0)}, "
-                    f"memory_injection_method={self.config.get('memory_injection_method', 'user_prompt')}, "
-                    f"memory_injection_position={self.config.get('memory_injection_position', 'prepend')}, "
                     f"plugin_data_dir={self.plugin_data_dir}"
                 )
             except Exception as e:

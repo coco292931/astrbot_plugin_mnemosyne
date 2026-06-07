@@ -79,7 +79,6 @@ from core.memory_operations import (  # noqa: E402
     _build_lightweight_graph_metadata,
     _post_process_search_results,
     _resolve_sender_identity,
-    clean_contexts,
 )
 from core.tools import (  # noqa: E402
     extract_query_keywords,
@@ -97,13 +96,6 @@ from memory_manager.context_manager import ConversationContextManager  # noqa: E
 class _Plugin:
     def __init__(self, config: dict):
         self.config = config
-
-
-class _Request:
-    def __init__(self, contexts=None, system_prompt="", prompt=""):
-        self.contexts = contexts if contexts is not None else []
-        self.system_prompt = system_prompt
-        self.prompt = prompt
 
 
 class TestMemoryMetaHelpers(unittest.TestCase):
@@ -293,71 +285,6 @@ class TestRemoveSystemContent(unittest.TestCase):
         )
 
 
-class TestCleanContexts(unittest.TestCase):
-    def test_request_cleanup_defaults_to_removing_old_user_prompt_memories(self) -> None:
-        plugin = _Plugin(
-            {
-                "memory_injection_method": "user_prompt",
-                "contexts_memory_len": -1,
-            }
-        )
-        req = _Request(
-            contexts=[
-                {"role": "user", "content": "old <Mnemosyne>memory-a</Mnemosyne> hi"},
-                {"role": "assistant", "content": "reply"},
-            ]
-        )
-
-        clean_contexts(plugin, req)
-
-        self.assertEqual(req.contexts[0]["content"], "old  hi")
-
-    def test_request_cleanup_can_preserve_old_user_prompt_memories_when_explicit(self) -> None:
-        plugin = _Plugin(
-            {
-                "memory_injection_method": "user_prompt",
-                "contexts_memory_len": -1,
-                "request_contexts_memory_len": -1,
-            }
-        )
-        req = _Request(
-            contexts=[
-                {"role": "user", "content": "old <Mnemosyne>memory-a</Mnemosyne> hi"},
-            ]
-        )
-
-        clean_contexts(plugin, req)
-
-        self.assertEqual(
-            req.contexts[0]["content"], "old <Mnemosyne>memory-a</Mnemosyne> hi"
-        )
-
-    def test_request_cleanup_defaults_to_removing_old_inserted_system_memories(self) -> None:
-        plugin = _Plugin(
-            {
-                "memory_injection_method": "insert_system_prompt",
-                "contexts_memory_len": -1,
-            }
-        )
-        req = _Request(
-            contexts=[
-                {"role": "system", "content": "persona setup"},
-                {"role": "system", "content": "<Mnemosyne>memory-a</Mnemosyne>"},
-                {"role": "user", "content": "hello"},
-            ]
-        )
-
-        clean_contexts(plugin, req)
-
-        self.assertEqual(
-            req.contexts,
-            [
-                {"role": "system", "content": "persona setup"},
-                {"role": "user", "content": "hello"},
-            ],
-        )
-
-
 class TestConversationContextManager(unittest.TestCase):
     def test_init_conv_does_not_alias_provider_contexts(self) -> None:
         manager = ConversationContextManager()
@@ -494,50 +421,6 @@ class TestPostProcessSearchResults(unittest.TestCase):
 
         self.assertEqual(ranked_without_graph[0]["content"], "neutral record")
         self.assertEqual(ranked_with_graph[0]["content"], "memory about bravo")
-
-    def test_no_keyword_path_uses_stable_order(self) -> None:
-        plugin = _Plugin(
-            {"use_participant_filtering": False, "use_lightweight_memory_graph": False}
-        )
-        detailed_results = [
-            {"content": "later record", "_distance": 0.2, "create_time": 100},
-            {"content": "nearer record", "_distance": 0.1, "create_time": 50},
-            {"content": "same distance newer", "_distance": 0.1, "create_time": 200},
-        ]
-
-        ranked = _post_process_search_results(
-            plugin=plugin,
-            detailed_results=detailed_results,
-            query_text="a",
-            sender_id=None,
-        )
-
-        self.assertEqual(
-            [item["content"] for item in ranked],
-            ["same distance newer", "nearer record", "later record"],
-        )
-
-    def test_keyword_ties_use_stable_tiebreaker(self) -> None:
-        plugin = _Plugin(
-            {"use_participant_filtering": False, "use_lightweight_memory_graph": False}
-        )
-        detailed_results = [
-            {"content": "alpha older", "_distance": 0.1, "create_time": 100},
-            {"content": "alpha newer", "_distance": 0.1, "create_time": 200},
-            {"content": "alpha far", "_distance": 0.8, "create_time": 300},
-        ]
-
-        ranked = _post_process_search_results(
-            plugin=plugin,
-            detailed_results=detailed_results,
-            query_text="alpha",
-            sender_id=None,
-        )
-
-        self.assertEqual(
-            [item["content"] for item in ranked],
-            ["alpha newer", "alpha older", "alpha far"],
-        )
 
 
 class _Sender:
