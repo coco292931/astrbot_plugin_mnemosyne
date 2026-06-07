@@ -157,7 +157,7 @@
     "memory_injection_method":{
         "description":"记忆插入方式",
         "type":"string",
-        "hint":"user_prompt 会嵌入到用户消息中，system_prompt 会嵌入到系统消息中；insert_system_prompt 为兼容旧配置，运行时会按 system_prompt 方式注入，以减少对后续历史和前缀缓存的破坏",
+        "hint":"user_prompt 会嵌入到用户消息的最前面，system_prompt会嵌入到系统消息中，insert_system_prompt会向上下文列表中添加一条新的系统消息",
         "options": ["user_prompt", "system_prompt", "insert_system_prompt"],
         "default": "user_prompt"
     },

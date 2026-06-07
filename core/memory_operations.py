@@ -1250,15 +1250,11 @@ def _format_and_inject_memory(
             req.system_prompt = long_memory + current_system_prompt
 
     elif injection_method == "insert_system_prompt":
-        # 运行时避免把长期记忆作为独立 system message 塞进 contexts，
-        # 否则它会在下一轮历史中出现在中段，破坏前缀缓存稳定性。
-        current_system_prompt = (
-            req.system_prompt if isinstance(req.system_prompt, str) else ""
-        )
+        payload = {"role": "system", "content": long_memory}
         if injection_position == "append":
-            req.system_prompt = current_system_prompt + "\n" + long_memory
+            req.contexts.append(payload)
         else:
-            req.system_prompt = long_memory + "\n" + current_system_prompt
+            req.contexts.insert(0, payload)
 
     else:
         logger.warning(
