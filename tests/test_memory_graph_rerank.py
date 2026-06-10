@@ -77,6 +77,7 @@ from core.memory_operations import (  # noqa: E402
     _build_cleaned_contexts_for_history,
     _build_identity_prefixed_user_text,
     _build_lightweight_graph_metadata,
+    _format_and_inject_memory,
     _get_top_k_search_progress,
     clean_contexts,
     _post_process_search_results,
@@ -99,12 +100,20 @@ from memory_manager.context_manager import ConversationContextManager  # noqa: E
 class _Plugin:
     def __init__(self, config: dict):
         self.config = config
+        self.plugin_data_dir = None
 
 
 class _Req:
-    def __init__(self, contexts=None, system_prompt=""):
+    def __init__(self, contexts=None, system_prompt="", prompt="", extra_user_content_parts=None):
         self.contexts = contexts or []
         self.system_prompt = system_prompt
+        self.prompt = prompt
+        self.extra_user_content_parts = extra_user_content_parts or []
+
+
+class _TextPart:
+    def __init__(self, text=""):
+        self.text = text
 
 
 class TestMemoryMetaHelpers(unittest.TestCase):
@@ -359,6 +368,51 @@ class TestCleanContexts(unittest.TestCase):
         self.assertEqual(req.system_prompt, "prefix  mid ")
 
 
+class TestInjectionPath(unittest.TestCase):
+    def test_user_prompt_prefers_extra_user_content_parts(self) -> None:
+        plugin = _Plugin(
+            {
+                "memory_injection_method": "user_prompt",
+                "memory_injection_position": "prepend",
+                "contexts_memory_len": 0,
+            }
+        )
+        req = _Req(
+            prompt="hello",
+            extra_user_content_parts=[_TextPart(text="seed")],
+        )
+
+        _format_and_inject_memory(
+            plugin,
+            event=None,
+            detailed_results=[{"content": "memory item", "create_time": None}],
+            req=req,
+        )
+
+        self.assertEqual(req.prompt, "hello")
+        self.assertEqual(len(req.extra_user_content_parts), 2)
+        self.assertIn("<Mnemosyne>", req.extra_user_content_parts[-1].text)
+
+    def test_user_prompt_falls_back_to_prompt_when_extra_missing(self) -> None:
+        plugin = _Plugin(
+            {
+                "memory_injection_method": "user_prompt",
+                "memory_injection_position": "prepend",
+                "contexts_memory_len": 0,
+            }
+        )
+        req = _Req(prompt="hello", extra_user_content_parts=[])
+
+        _format_and_inject_memory(
+            plugin,
+            event=None,
+            detailed_results=[{"content": "memory item", "create_time": None}],
+            req=req,
+        )
+
+        self.assertIn("<Mnemosyne>", req.prompt)
+
+
 class TestTopKSearchProgress(unittest.TestCase):
     def test_first_user_message_always_maps_to_zero_completed_rounds(self) -> None:
         plugin_message_count, completed_rounds = _get_top_k_search_progress(
@@ -433,6 +487,16 @@ class TestConversationContextManager(unittest.TestCase):
         fresh_history = manager.get_history("session-1")
         self.assertEqual(len(fresh_history), 1)
         self.assertEqual(fresh_history[0]["content"][0]["text"], "old message")
+
+    def test_completed_rounds_are_explicitly_tracked(self) -> None:
+        manager = ConversationContextManager()
+        manager.init_conv("session-1", [], event=None)
+
+        self.assertEqual(manager.get_completed_rounds("session-1"), 0)
+        self.assertEqual(manager.increment_completed_rounds("session-1"), 1)
+        self.assertEqual(manager.get_completed_rounds("session-1"), 1)
+        self.assertEqual(manager.increment_completed_rounds("session-1"), 2)
+        self.assertEqual(manager.get_completed_rounds("session-1"), 2)
 
 
 class TestLightweightGraphMetadata(unittest.TestCase):

@@ -64,6 +64,24 @@ def _append_to_extra_user_content_parts(req: ProviderRequest, text: str) -> bool
         return False
 
 
+def _append_to_prompt(req: ProviderRequest, text: str) -> bool:
+    if not hasattr(req, "prompt"):
+        return False
+    current_prompt = req.prompt if isinstance(req.prompt, str) else ""
+    req.prompt = current_prompt + f"\n\n{text}" if current_prompt else text
+    return True
+
+
+def _append_to_system_prompt(req: ProviderRequest, text: str) -> bool:
+    if not hasattr(req, "system_prompt"):
+        return False
+    current_system_prompt = req.system_prompt if isinstance(req.system_prompt, str) else ""
+    req.system_prompt = (
+        current_system_prompt + f"\n\n{text}" if current_system_prompt else text
+    )
+    return True
+
+
 def _build_cleaned_contexts_for_history(
     plugin: "Mnemosyne", contexts: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -791,9 +809,17 @@ async def handle_query_memory(
         # --- top_k 检索间隔判断 ---
         top_k_interval = _resolve_top_k_search_interval(plugin.config, default=1)
         session_context = plugin.context_manager.get_session_context(session_id)
-        plugin_message_count, rounds_completed = _get_top_k_search_progress(
+        plugin_message_count, fallback_rounds_completed = _get_top_k_search_progress(
             session_context
         )
+        rounds_completed = plugin.context_manager.get_completed_rounds(session_id)
+        if rounds_completed < 0:
+            rounds_completed = 0
+
+        # 兼容老会话/异常状态：若显式计数缺失，则回退到历史推导值。
+        if rounds_completed == 0 and fallback_rounds_completed > 0:
+            rounds_completed = fallback_rounds_completed
+
         should_search = (rounds_completed % top_k_interval) == 0
 
         if not should_search:
@@ -914,6 +940,8 @@ async def handle_on_llm_resp(
             resp.completion_text,
             metadata={"speaker_id": "assistant"},
         )
+        completed_rounds = plugin.context_manager.increment_completed_rounds(session_id)
+        logger.debug(f"会话 {session_id} 已完成轮数更新为: {completed_rounds}")
         plugin.msg_counter.increment_counter(session_id)
 
     except Exception as e:
@@ -1319,16 +1347,21 @@ def _format_and_inject_memory(
     # 清理插入的长期记忆内容
     clean_contexts(plugin, req)
     if injection_method == "user_prompt":
-        current_prompt = req.prompt if isinstance(req.prompt, str) else ""
-        if injection_position == "append":
-            req.prompt = current_prompt + "\n" + long_memory
+        # 对齐 kokotoolbox 的 conversation 注入语义：
+        # 1. 优先 extra_user_content_parts（会话侧）
+        # 2. 回退 prompt
+        # 3. 最终回退 system_prompt
+        if _append_to_extra_user_content_parts(req, long_memory):
+            logger.info("长期记忆已注入 extra_user_content_parts。")
+        elif _append_to_prompt(req, long_memory):
+            logger.info("长期记忆已注入 prompt（回退路径）。")
+        elif _append_to_system_prompt(req, long_memory):
+            logger.info("长期记忆已注入 system_prompt（最终回退）。")
         else:
-            req.prompt = long_memory + "\n" + current_prompt
+            logger.warning("长期记忆注入失败：无可用注入点位。")
 
     elif injection_method == "system_prompt":
-        current_system_prompt = (
-            req.system_prompt if isinstance(req.system_prompt, str) else ""
-        )
+        current_system_prompt = req.system_prompt if isinstance(req.system_prompt, str) else ""
         if injection_position == "append":
             req.system_prompt = current_system_prompt + long_memory
         else:
@@ -1346,10 +1379,16 @@ def _format_and_inject_memory(
 
     else:
         logger.warning(
-            f"未知的记忆注入方法 '{injection_method}'，将默认追加到用户 prompt。"
+            f"未知的记忆注入方法 '{injection_method}'，将默认按会话侧方式注入。"
         )
-        current_prompt = req.prompt if isinstance(req.prompt, str) else ""
-        req.prompt = long_memory + "\n" + current_prompt
+        if _append_to_extra_user_content_parts(req, long_memory):
+            logger.info("长期记忆已注入 extra_user_content_parts（未知模式回退）。")
+        elif _append_to_prompt(req, long_memory):
+            logger.info("长期记忆已注入 prompt（未知模式回退）。")
+        elif _append_to_system_prompt(req, long_memory):
+            logger.info("长期记忆已注入 system_prompt（未知模式回退）。")
+        else:
+            logger.warning("长期记忆注入失败：未知模式且无可用注入点位。")
 
     _append_request_trace(
         plugin,

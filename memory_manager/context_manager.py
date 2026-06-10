@@ -34,6 +34,7 @@ class ConversationContextManager:
             self.conversations[session_id] = {}
             self.conversations[session_id]["history"] = deepcopy(contexts)
             self.conversations[session_id]["initial_history_len"] = len(contexts)
+            self.conversations[session_id]["completed_rounds"] = 0
             self.conversations[session_id]["event"] = event
             # 初始化最后一次总结的时间，这里在重启的时候会丢失，但是先不管了
             # 重启了计时器就重启，用户再一次对话再重启计时器，emmmm，之后再改了，加个TODO
@@ -60,6 +61,7 @@ class ConversationContextManager:
                 self.conversations[session_id] = {
                     "history": [],
                     "initial_history_len": 0,
+                    "completed_rounds": 0,
                     "last_summary_time": time.time(),
                 }
 
@@ -116,3 +118,39 @@ class ConversationContextManager:
                 return deepcopy(self.conversations[session_id])
             else:
                 return {}
+
+    def get_completed_rounds(self, session_id: str) -> int:
+        """
+        获取当前会话已完成的完整对话轮数（一问一答=1轮）。
+        """
+        with self._lock:
+            if session_id not in self.conversations:
+                return 0
+            try:
+                value = int(self.conversations[session_id].get("completed_rounds", 0))
+            except (TypeError, ValueError):
+                value = 0
+            return max(value, 0)
+
+    def increment_completed_rounds(self, session_id: str) -> int:
+        """
+        在 assistant 回复成功记录后，将完整对话轮数 +1。
+        返回递增后的轮数。
+        """
+        with self._lock:
+            if session_id not in self.conversations:
+                self.conversations[session_id] = {
+                    "history": [],
+                    "initial_history_len": 0,
+                    "completed_rounds": 0,
+                    "last_summary_time": time.time(),
+                }
+
+            try:
+                value = int(self.conversations[session_id].get("completed_rounds", 0))
+            except (TypeError, ValueError):
+                value = 0
+
+            value = max(value, 0) + 1
+            self.conversations[session_id]["completed_rounds"] = value
+            return value
