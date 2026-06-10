@@ -132,6 +132,11 @@
 <td>3</td>
 </tr>
 <tr>
+<td><code>top_k_search_interval</code></td>
+<td>top_k 检索间隔（对话轮数）。每 N 轮完整对话执行一次向量检索。首条消息始终触发。设置为 1 表示每次都检索</td>
+<td>1</td>
+</tr>
+<tr>
 <td><code>collection_name</code></td>
 <td>Milvus 集合名称</td>
 <td>default</td>
@@ -362,6 +367,19 @@ uv pip install -r requirements.txt
 ```
 用户输入 → Embedding 向量化 → Milvus 相似度检索 → 过滤筛选 → 注入上下文
 ```
+
+当 `top_k_search_interval > 1` 时，检索流程会变为“按轮触发”：
+
+```text
+首条用户消息 → 检索
+后续消息 → 每完成 N 轮完整对话（一问一答=1轮）后，在下一条用户消息到来时再次检索
+未到阈值的请求 → 不做 top_k 检索，仅清理旧的 Mnemosyne 注入块
+```
+
+说明：
+- `top_k_search_interval = 1`：保持原行为，每次用户消息都检索
+- 首条用户消息始终检索一次
+- 显式“记住 / 请记住 / remember”写入长期记忆，不受该间隔限制
 
 ### 数据模型
 

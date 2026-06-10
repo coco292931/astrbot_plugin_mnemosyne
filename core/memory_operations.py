@@ -85,6 +85,53 @@ def _stable_text_hash(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
 
 
+def _resolve_top_k_search_interval(
+    config: dict[str, Any] | None, default: int = 1
+) -> int:
+    """
+    解析 top_k 检索间隔配置，并做最小值保护。
+
+    - 非法值/空值回退到 default
+    - 小于 1 时强制回退到 1，避免除零或负值逻辑异常
+    """
+    if not isinstance(config, dict):
+        return default
+
+    raw_value = config.get("top_k_search_interval", default)
+    try:
+        interval = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+    return interval if interval >= 1 else default
+
+
+def _get_top_k_search_progress(session_context: dict[str, Any]) -> tuple[int, int]:
+    """
+    计算当前会话的插件消息数，以及本次用户请求到来前已完成的对话轮数。
+
+    说明：
+    - `history` 中包含初始化时从 AstrBot 复制来的上下文，因此需扣除 `initial_history_len`
+    - 在 `on_llm_request` 阶段，当前用户消息已经写入 `history`，但 assistant 回复尚未写入
+    - 因此已完成轮数按 `(plugin_message_count - 1) // 2` 计算
+    """
+    history = session_context.get("history", [])
+    if not isinstance(history, list):
+        history = []
+
+    try:
+        initial_history_len = int(session_context.get("initial_history_len", 0))
+    except (TypeError, ValueError):
+        initial_history_len = 0
+
+    if initial_history_len < 0:
+        initial_history_len = 0
+
+    plugin_message_count = max(len(history) - initial_history_len, 0)
+    completed_rounds = max((plugin_message_count - 1) // 2, 0)
+    return plugin_message_count, completed_rounds
+
+
 def _preview_text(value: str, limit: int = 160) -> dict[str, str]:
     if len(value) <= limit:
         return {"head": value, "tail": value}
@@ -728,6 +775,41 @@ async def handle_query_memory(
         # 计数器+1
         plugin.msg_counter.increment_counter(session_id)
 
+        # 显式“记住”写入不应受 top_k 检索间隔限制。
+        if plugin.config.get("enable_explicit_memory_capture", False):
+            explicit_content = _extract_explicit_memory_content(actual_query)
+            if explicit_content:
+                stored = await store_manual_memory(
+                    plugin=plugin,
+                    event=event,
+                    memory_content=explicit_content,
+                    source="explicit_trigger",
+                )
+                if stored:
+                    logger.info("已根据显式“记住”触发写入长期记忆。")
+
+        # --- top_k 检索间隔判断 ---
+        top_k_interval = _resolve_top_k_search_interval(plugin.config, default=1)
+        session_context = plugin.context_manager.get_session_context(session_id)
+        plugin_message_count, rounds_completed = _get_top_k_search_progress(
+            session_context
+        )
+        should_search = (rounds_completed % top_k_interval) == 0
+
+        if not should_search:
+            logger.debug(
+                f"会话 {session_id} 当前已 {rounds_completed} 轮 (插件消息数 {plugin_message_count})，"
+                f"top_k 检索间隔 {top_k_interval} 轮，跳过本次检索，仅清理旧注入。"
+            )
+            # 仅清理请求对象中的旧注入块，不进行检索和注入
+            clean_contexts(plugin, req, force_remove_all=True)
+            return
+
+        logger.debug(
+            f"会话 {session_id} 当前已 {rounds_completed} 轮 (插件消息数 {plugin_message_count})，"
+            f"触发 top_k 检索 (间隔 {top_k_interval} 轮)。"
+        )
+
         # --- RAG 搜索 ---
         detailed_results = []
         try:
@@ -741,19 +823,6 @@ async def handle_query_memory(
                 ):
                     logger.warning("Embedding Provider 不可用，无法执行 RAG 搜索")
                     return
-
-                # 支持显式记忆触发：仅在强触发语句下执行，默认关闭以避免误触。
-                if plugin.config.get("enable_explicit_memory_capture", False):
-                    explicit_content = _extract_explicit_memory_content(actual_query)
-                    if explicit_content:
-                        stored = await store_manual_memory(
-                            plugin=plugin,
-                            event=event,
-                            memory_content=explicit_content,
-                            source="explicit_trigger",
-                        )
-                        if stored:
-                            logger.info("已根据显式“记住”触发写入长期记忆。")
 
                 # 使用 AstrBot EmbeddingProvider 的 embed 方法
                 if plugin.embedding_provider:
@@ -795,6 +864,9 @@ async def handle_query_memory(
             # 3. 格式化结果并注入到提示中
             if detailed_results:
                 _format_and_inject_memory(plugin, event, detailed_results, req)
+            else:
+                # 本轮已到检索时机但没有命中结果时，也应清理旧注入块，避免残留。
+                clean_contexts(plugin, req, force_remove_all=True)
 
         except Exception as e:
             logger.error(f"处理长期记忆 RAG 查询时发生错误: {e}", exc_info=True)
@@ -1293,12 +1365,16 @@ def _format_and_inject_memory(
 
 
 # 删除补充的长期记忆函数
-def clean_contexts(plugin: "Mnemosyne", req: ProviderRequest):
+def clean_contexts(
+    plugin: "Mnemosyne",
+    req: ProviderRequest,
+    force_remove_all: bool = False,
+):
     """
     删除长期记忆中的标签
     """
     injection_method = plugin.config.get("memory_injection_method", "user_prompt")
-    contexts_memory_len = plugin.config.get("contexts_memory_len", 0)
+    contexts_memory_len = 0 if force_remove_all else plugin.config.get("contexts_memory_len", 0)
     if injection_method == "user_prompt":
         req.contexts = remove_mnemosyne_tags(req.contexts, contexts_memory_len)
     elif injection_method == "system_prompt":

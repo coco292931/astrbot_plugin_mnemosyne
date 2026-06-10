@@ -60,6 +60,7 @@
    # 记忆总结配置
    num_pairs: 5         # 每5轮对话后总结
    top_k: 5             # 检索返回5条记忆
+   top_k_search_interval: 1  # 每1轮都检索；改成 3 表示每3轮完整对话检索一次
    score_threshold: 0.7 # 相似度阈值
 
    # Embedding 服务配置（必填）
@@ -123,11 +124,13 @@ pip install pymilvus[milvus_lite]
 1. 相似度阈值设置过高（默认 0.7）
 2. 问题与之前对话不相关
 3. 记忆尚未总结完成
+4. 配置了 `top_k_search_interval > 1`，当前轮次尚未到检索时机
 
 **调整方法**：
 ```yaml
 score_threshold: 0.6  # 降低阈值试试
 top_k: 10             # 增加返回数量
+top_k_search_interval: 1  # 临时改为每轮都检索，便于排查
 ```
 
 ---
@@ -309,6 +312,7 @@ services:
 # 轻量配置
 num_pairs: 8              # 减少总结频率
 top_k: 3                  # 减少检索数量
+top_k_search_interval: 2  # 每2轮完整对话检索一次
 use_session_filtering: true  # 启用会话过滤
 ```
 
@@ -318,11 +322,13 @@ use_session_filtering: true  # 启用会话过滤
 # 标准配置
 num_pairs: 5
 top_k: 5
+top_k_search_interval: 1
 score_threshold: 0.7
 
 # 高负载配置
 num_pairs: 10
 top_k: 10
+top_k_search_interval: 3
 use_personality_filtering: true
 ```
 
@@ -355,6 +361,7 @@ embedding_providers:
 # 记忆参数
 num_pairs: 5
 top_k: 5
+top_k_search_interval: 1
 score_threshold: 0.7
 use_session_filtering: true
 use_personality_filtering: false

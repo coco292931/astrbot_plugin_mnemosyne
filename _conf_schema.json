@@ -139,6 +139,15 @@
         "minimum":1,
         "maximum":25
     },
+    "top_k_search_interval":{
+        "description":"top_k检索间隔（对话轮数）",
+        "type":"int",
+        "hint":"每 x 轮完整对话（一问一答=1轮）才执行一次 top_k 向量检索。设置为 1 表示每次都检索（原行为）。首条消息始终会触发检索",
+        "obvious_hint":true,
+        "default":1,
+        "minimum":1,
+        "maximum":99
+    },
     "top_k":{
         "description":"返回的长期记忆的数量",
         "type":"int",

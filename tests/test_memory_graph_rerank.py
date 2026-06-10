@@ -77,7 +77,10 @@ from core.memory_operations import (  # noqa: E402
     _build_cleaned_contexts_for_history,
     _build_identity_prefixed_user_text,
     _build_lightweight_graph_metadata,
+    _get_top_k_search_progress,
+    clean_contexts,
     _post_process_search_results,
+    _resolve_top_k_search_interval,
     _resolve_sender_identity,
 )
 from core.tools import (  # noqa: E402
@@ -98,7 +101,29 @@ class _Plugin:
         self.config = config
 
 
+class _Req:
+    def __init__(self, contexts=None, system_prompt=""):
+        self.contexts = contexts or []
+        self.system_prompt = system_prompt
+
+
 class TestMemoryMetaHelpers(unittest.TestCase):
+    def test_resolve_top_k_search_interval_uses_default_for_invalid_values(self) -> None:
+        self.assertEqual(_resolve_top_k_search_interval(None), 1)
+        self.assertEqual(_resolve_top_k_search_interval({}), 1)
+        self.assertEqual(
+            _resolve_top_k_search_interval({"top_k_search_interval": "bad"}), 1
+        )
+        self.assertEqual(
+            _resolve_top_k_search_interval({"top_k_search_interval": 0}), 1
+        )
+        self.assertEqual(
+            _resolve_top_k_search_interval({"top_k_search_interval": -3}), 1
+        )
+        self.assertEqual(
+            _resolve_top_k_search_interval({"top_k_search_interval": "5"}), 5
+        )
+
     def test_pack_split_strip_round_trip(self) -> None:
         content = "Alice met Bob"
         metadata = {"participants": ["u1"], "relations": [["alice", "bob"]]}
@@ -172,6 +197,25 @@ class TestHistoryContextCleaning(unittest.TestCase):
             ],
         )
         self.assertEqual(source_contexts[1]["content"], "<Mnemosyne>old</Mnemosyne>")
+
+
+class TestTopKSearchIntervalHelpers(unittest.TestCase):
+    def test_get_top_k_search_progress_excludes_initial_history(self) -> None:
+        plugin_message_count, completed_rounds = _get_top_k_search_progress(
+            {
+                "initial_history_len": 2,
+                "history": [
+                    {"role": "user", "content": "old-1"},
+                    {"role": "assistant", "content": "old-2"},
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                    {"role": "user", "content": "u2"},
+                ],
+            }
+        )
+
+        self.assertEqual(plugin_message_count, 3)
+        self.assertEqual(completed_rounds, 1)
 
 
 class TestRemoveMnemosyneTags(unittest.TestCase):
@@ -283,6 +327,79 @@ class TestRemoveSystemContent(unittest.TestCase):
                 {"role": "user", "content": "hello"},
             ],
         )
+
+
+class TestCleanContexts(unittest.TestCase):
+    def test_force_remove_all_ignores_contexts_memory_len_for_user_prompt(self) -> None:
+        plugin = _Plugin(
+            {"memory_injection_method": "user_prompt", "contexts_memory_len": 2}
+        )
+        req = _Req(
+            contexts=[
+                {"role": "user", "content": "a <Mnemosyne>old1</Mnemosyne>"},
+                {"role": "user", "content": "b <Mnemosyne>old2</Mnemosyne>"},
+            ]
+        )
+
+        clean_contexts(plugin, req, force_remove_all=True)
+
+        self.assertEqual(req.contexts[0]["content"], "a ")
+        self.assertEqual(req.contexts[1]["content"], "b ")
+
+    def test_force_remove_all_ignores_contexts_memory_len_for_system_prompt(self) -> None:
+        plugin = _Plugin(
+            {"memory_injection_method": "system_prompt", "contexts_memory_len": 2}
+        )
+        req = _Req(
+            system_prompt="prefix <Mnemosyne>old1</Mnemosyne> mid <Mnemosyne>old2</Mnemosyne>"
+        )
+
+        clean_contexts(plugin, req, force_remove_all=True)
+
+        self.assertEqual(req.system_prompt, "prefix  mid ")
+
+
+class TestTopKSearchProgress(unittest.TestCase):
+    def test_first_user_message_always_maps_to_zero_completed_rounds(self) -> None:
+        plugin_message_count, completed_rounds = _get_top_k_search_progress(
+            {
+                "initial_history_len": 0,
+                "history": [
+                    {"role": "user", "content": "hello"},
+                ],
+            }
+        )
+
+        self.assertEqual(plugin_message_count, 1)
+        self.assertEqual(completed_rounds, 0)
+
+    def test_completed_rounds_progress_after_assistant_reply(self) -> None:
+        plugin_message_count, completed_rounds = _get_top_k_search_progress(
+            {
+                "initial_history_len": 0,
+                "history": [
+                    {"role": "user", "content": "u1"},
+                    {"role": "assistant", "content": "a1"},
+                    {"role": "user", "content": "u2"},
+                ],
+            }
+        )
+
+        self.assertEqual(plugin_message_count, 3)
+        self.assertEqual(completed_rounds, 1)
+
+    def test_interval_trigger_semantics_match_expectation(self) -> None:
+        interval = _resolve_top_k_search_interval({"top_k_search_interval": 3})
+
+        should_search_first = (0 % interval) == 0
+        should_search_after_1_round = (1 % interval) == 0
+        should_search_after_2_rounds = (2 % interval) == 0
+        should_search_after_3_rounds = (3 % interval) == 0
+
+        self.assertTrue(should_search_first)
+        self.assertFalse(should_search_after_1_round)
+        self.assertFalse(should_search_after_2_rounds)
+        self.assertTrue(should_search_after_3_rounds)
 
 
 class TestConversationContextManager(unittest.TestCase):
