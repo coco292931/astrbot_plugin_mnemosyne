@@ -82,6 +82,20 @@ def _append_to_system_prompt(req: ProviderRequest, text: str) -> bool:
     return True
 
 
+def _append_to_contexts(
+    req: ProviderRequest, text: str, position: str = "prepend"
+) -> bool:
+    if not isinstance(req.contexts, list):
+        return False
+
+    payload = {"role": "system", "content": text}
+    if position == "append":
+        req.contexts.append(payload)
+    else:
+        req.contexts.insert(0, payload)
+    return True
+
+
 def _build_cleaned_contexts_for_history(
     plugin: "Mnemosyne", contexts: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -1347,11 +1361,12 @@ def _format_and_inject_memory(
     # 清理插入的长期记忆内容
     clean_contexts(plugin, req)
     if injection_method == "user_prompt":
-        # 对齐 kokotoolbox 的 conversation 注入语义：
-        # 1. 优先 extra_user_content_parts（会话侧）
-        # 2. 回退 prompt
-        # 3. 最终回退 system_prompt
-        if _append_to_extra_user_content_parts(req, long_memory):
+        # 先写回上下文列表，确保记忆块进入当前请求的历史上下文。
+        # 这比只挂在 prompt/extra_user_content_parts 上更稳定，也更容易被
+        # AstrBot 的会话历史链路保留和调试追踪。
+        if _append_to_contexts(req, long_memory, injection_position):
+            logger.info("长期记忆已注入 req.contexts。")
+        elif _append_to_extra_user_content_parts(req, long_memory):
             logger.info("长期记忆已注入 extra_user_content_parts。")
         elif _append_to_prompt(req, long_memory):
             logger.info("长期记忆已注入 prompt（回退路径）。")

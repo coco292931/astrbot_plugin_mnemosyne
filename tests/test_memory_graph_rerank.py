@@ -245,6 +245,54 @@ class TestRemoveMnemosyneTags(unittest.TestCase):
             message["content"], "Hello <Mnemosyne>memory</Mnemosyne> world"
         )
 
+    def test_remove_all_tags_also_cleans_system_messages(self) -> None:
+        message = {
+            "role": "system",
+            "content": "prefix <Mnemosyne>memory</Mnemosyne> suffix",
+        }
+
+        cleaned = remove_mnemosyne_tags([message], contexts_memory_len=0)
+
+        self.assertEqual(cleaned[0]["content"], "prefix  suffix")
+
+    def test_remove_all_tags_drops_injected_system_memory_message(self) -> None:
+        # 模拟插件以独立 system 消息形式注入的记忆块，清理后应整条删除，
+        # 不留下空消息壳，避免逐轮堆积。
+        contexts = [
+            {"role": "system", "content": "persona"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "system", "content": "<Mnemosyne>mem1</Mnemosyne>"},
+            {"role": "user", "content": "u2 <Mnemosyne>inline</Mnemosyne>"},
+        ]
+
+        cleaned = remove_mnemosyne_tags(contexts, contexts_memory_len=0)
+
+        self.assertEqual(
+            cleaned,
+            [
+                {"role": "system", "content": "persona"},
+                {"role": "user", "content": "u1"},
+                {"role": "assistant", "content": "a1"},
+                # 独立的 system 记忆消息被整条删除
+                {"role": "user", "content": "u2 "},
+            ],
+        )
+
+    def test_remove_tags_with_retention_drops_emptied_system_message(self) -> None:
+        contexts = [
+            {"role": "system", "content": "<Mnemosyne>old</Mnemosyne>"},
+            {"role": "system", "content": "<Mnemosyne>new</Mnemosyne>"},
+        ]
+
+        cleaned = remove_mnemosyne_tags(contexts, contexts_memory_len=1)
+
+        # 仅保留最新一条记忆，旧的清空后整条删除
+        self.assertEqual(
+            cleaned,
+            [{"role": "system", "content": "<Mnemosyne>new</Mnemosyne>"}],
+        )
+
     def test_remove_all_tags_preserves_metadata_without_tags(self) -> None:
         message = {
             "role": "user",
@@ -369,7 +417,7 @@ class TestCleanContexts(unittest.TestCase):
 
 
 class TestInjectionPath(unittest.TestCase):
-    def test_user_prompt_prefers_extra_user_content_parts(self) -> None:
+    def test_user_prompt_injects_into_contexts(self) -> None:
         plugin = _Plugin(
             {
                 "memory_injection_method": "user_prompt",
@@ -390,10 +438,12 @@ class TestInjectionPath(unittest.TestCase):
         )
 
         self.assertEqual(req.prompt, "hello")
-        self.assertEqual(len(req.extra_user_content_parts), 2)
-        self.assertIn("<Mnemosyne>", req.extra_user_content_parts[-1].text)
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        self.assertEqual(req.extra_user_content_parts[0].text, "seed")
+        self.assertEqual(req.contexts[0]["role"], "system")
+        self.assertIn("<Mnemosyne>", req.contexts[0]["content"])
 
-    def test_user_prompt_falls_back_to_prompt_when_extra_missing(self) -> None:
+    def test_user_prompt_falls_back_to_contexts_when_extra_missing(self) -> None:
         plugin = _Plugin(
             {
                 "memory_injection_method": "user_prompt",
@@ -410,7 +460,9 @@ class TestInjectionPath(unittest.TestCase):
             req=req,
         )
 
-        self.assertIn("<Mnemosyne>", req.prompt)
+        self.assertEqual(len(req.contexts), 1)
+        self.assertEqual(req.contexts[0]["role"], "system")
+        self.assertIn("<Mnemosyne>", req.contexts[0]["content"])
 
 
 class TestTopKSearchProgress(unittest.TestCase):

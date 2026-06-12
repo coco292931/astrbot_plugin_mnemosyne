@@ -114,12 +114,23 @@ def remove_mnemosyne_tags(
 
     if contexts_memory_len == 0:
         for content_item in contents:
-            if isinstance(content_item, dict) and content_item.get("role") == "user":
+            if isinstance(content_item, dict) and content_item.get("role") in {
+                "user",
+                "system",
+            }:
                 original_text = content_item.get("content", "")
                 # 关键修复：多模态内容（list/dict 等）不能强制转换为字符串。
                 # 只有在 content 为 str 时才需要清理标签。
                 if isinstance(original_text, str):
                     cleaned_text = compiled_regex.sub("", original_text)
+                    # 对 system 角色：若原文含 Mnemosyne 标签且清理后为空，
+                    # 说明这是插件注入的独立记忆消息，应整条删除，避免残留空消息壳。
+                    if (
+                        content_item.get("role") == "system"
+                        and not cleaned_text.strip()
+                        and compiled_regex.search(original_text)
+                    ):
+                        continue
                     cleaned_contents.append(
                         copy_with_cleaned_content(content_item, cleaned_text)
                     )
@@ -130,7 +141,10 @@ def remove_mnemosyne_tags(
     else:  # contexts_memory_len > 0
         all_mnemosyne_blocks: list[str] = []
         for content_item in contents:
-            if isinstance(content_item, dict) and content_item.get("role") == "user":
+            if isinstance(content_item, dict) and content_item.get("role") in {
+                "user",
+                "system",
+            }:
                 original_text = content_item.get("content", "")
                 if isinstance(original_text, str):
                     found_blocks = compiled_regex.findall(original_text)
@@ -143,7 +157,10 @@ def remove_mnemosyne_tags(
             return block if block in blocks_to_keep else ""
 
         for content_item in contents:
-            if isinstance(content_item, dict) and content_item.get("role") == "user":
+            if isinstance(content_item, dict) and content_item.get("role") in {
+                "user",
+                "system",
+            }:
                 original_text = content_item.get("content", "")
 
                 # M14 修复: 改进逻辑流程，确保正确处理各种情况
@@ -156,6 +173,12 @@ def remove_mnemosyne_tags(
                     if compiled_regex.search(original_text):
                         # 内容包含标签，进行清理
                         cleaned_text = compiled_regex.sub(replace_logic, original_text)
+                        # system 角色清理后为空说明是插件注入的独立记忆消息，整条删除。
+                        if (
+                            content_item.get("role") == "system"
+                            and not cleaned_text.strip()
+                        ):
+                            continue
                         cleaned_contents.append(
                             copy_with_cleaned_content(content_item, cleaned_text)
                         )
