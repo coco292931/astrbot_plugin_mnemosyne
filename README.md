@@ -20,7 +20,7 @@
 
 ## 概述
 
-**Mnemosyne** 是一个为 AstrBot 设计的长期记忆管理插件，基于 RAG (检索增强生成) 技术和 Milvus 向量数据库实现。该插件能够自动总结对话内容，将其转换为向量存储，并在后续对话中智能检索相关记忆，使 AI 具备真正的长期记忆能力。
+**Mnemosyne** 是一个为 AstrBot 设计的长期记忆管理插件，基于 RAG (检索增强生成) 技术和向量数据库实现，默认使用 Chroma 本地持久化，并可切换到 Milvus、Qdrant 或 Weaviate。该插件能够自动总结对话内容，将其转换为向量存储，并在后续对话中智能检索相关记忆，使 AI 具备真正的长期记忆能力。
 
 <table>
 <tr>
@@ -32,7 +32,7 @@
 <li><strong>自动记忆总结</strong><br/>根据对话轮数自动触发记忆总结与存储</li>
 <li><strong>智能记忆检索</strong><br/>基于语义相似度检索最相关的历史记忆</li>
 <li><strong>会话隔离</strong><br/>为不同会话维护独立的记忆上下文</li>
-<li><strong>向量化存储</strong><br/>使用 Milvus 进行高效的向量存储与检索</li>
+<li><strong>向量化存储</strong><br/>默认使用 Chroma，并支持 Milvus、Qdrant、Weaviate 后端</li>
 </ul>
 
 </td>
