@@ -489,6 +489,31 @@ async def handle_query_memory(
         # 计数器+1
         plugin.msg_counter.increment_counter(session_id)
 
+        # --- 间隔注入门控 ---
+        # “每隔 N 轮对话才触发一次记忆插入”。N<=1 表示每轮都注入（保持原行为）。
+        # 该门控仅控制本轮是否执行 RAG 检索与注入，不影响用户消息入库与总结计数。
+        # 注意：此处不累计召回历史，触发时仅注入“当前这一轮”检索到的记忆。
+        injection_interval = plugin.config.get("memory_injection_interval", 1)
+        try:
+            injection_interval = int(injection_interval)
+        except (TypeError, ValueError):
+            injection_interval = 1
+        if injection_interval > 1:
+            counter = plugin._injection_round_counter
+            current = counter.get(session_id, 0) + 1
+            if current < injection_interval:
+                counter[session_id] = current
+                logger.debug(
+                    f"间隔注入门控：会话 {session_id} 当前第 {current}/{injection_interval} 轮，"
+                    f"本轮跳过记忆检索与注入。"
+                )
+                return
+            # 达到间隔阈值，本轮触发注入并重置计数
+            counter[session_id] = 0
+            logger.debug(
+                f"间隔注入门控：会话 {session_id} 已达 {injection_interval} 轮，本轮触发记忆注入。"
+            )
+
         # --- RAG 搜索 ---
         detailed_results = []
         try:
