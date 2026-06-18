@@ -216,35 +216,36 @@ class MonitoringService:
         return status
 
     async def _check_milvus_health(self) -> ComponentHealth:
-        """检查 Milvus 健康状态"""
+        """检查向量数据库健康状态（方法名保留兼容旧调用）。"""
         try:
-            if not self.plugin.milvus_manager:
+            vector_db = getattr(self.plugin, "vector_db", None)
+            if not vector_db:
                 return ComponentHealth(
-                    name="milvus",
+                    name="vector_db",
                     status=ComponentStatus.UNHEALTHY,
-                    message="Milvus 管理器未初始化",
+                    message="向量数据库未初始化",
                 )
 
-            if not self.plugin.milvus_manager.is_connected():
+            if not vector_db.is_connected():
                 return ComponentHealth(
-                    name="milvus",
+                    name="vector_db",
                     status=ComponentStatus.UNHEALTHY,
-                    message="未连接到 Milvus",
+                    message="未连接到向量数据库",
                 )
 
             # 获取集合数量
-            collections = self.plugin.milvus_manager.list_collections()
+            collections = vector_db.list_collections()
 
             return ComponentHealth(
-                name="milvus",
+                name="vector_db",
                 status=ComponentStatus.HEALTHY,
-                message="Milvus 运行正常",
+                message="向量数据库运行正常",
                 metadata={"collections_count": len(collections)},
             )
         except Exception as e:
-            self.logger.error(f"检查 Milvus 健康状态失败: {e}")
+            self.logger.error(f"检查向量数据库健康状态失败: {e}")
             return ComponentHealth(
-                name="milvus",
+                name="vector_db",
                 status=ComponentStatus.UNHEALTHY,
                 message=f"检查失败: {str(e)}",
             )
@@ -378,18 +379,20 @@ class MonitoringService:
 
         try:
             # 获取向量数据库统计
-            if self.plugin.milvus_manager and self.plugin.milvus_manager.is_connected():
-                collections = self.plugin.milvus_manager.list_collections()
+            vector_db = getattr(self.plugin, "vector_db", None)
+            if vector_db and vector_db.is_connected():
+                collections = vector_db.list_collections()
                 usage.vector_db_collections = len(collections)
 
                 # 获取当前集合的记录数
-                if self.plugin.milvus_manager.has_collection(
-                    self.plugin.collection_name
-                ):
-                    collection = self.plugin.milvus_manager.get_collection(
-                        self.plugin.collection_name
+                if vector_db.has_collection(self.plugin.collection_name):
+                    records = vector_db.query(
+                        self.plugin.collection_name,
+                        filters=None,
+                        output_fields=["memory_id"],
+                        limit=10000,
                     )
-                    usage.vector_db_total_records = collection.num_entities
+                    usage.vector_db_total_records = len(records)
         except Exception as e:
             self.logger.error(f"获取向量数据库统计失败: {e}")
 

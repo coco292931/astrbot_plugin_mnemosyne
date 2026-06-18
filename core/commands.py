@@ -19,6 +19,10 @@ if TYPE_CHECKING:
     from ..main import Mnemosyne
 
 
+def _get_vector_db(self: "Mnemosyne"):
+    return getattr(self, "vector_db", None)
+
+
 def _build_memory_id_expression(memory_id: str) -> str:
     """
     构建 memory_id 查询表达式。
@@ -38,19 +42,20 @@ def _build_memory_id_expression(memory_id: str) -> str:
 
 
 async def list_collections_cmd_impl(self: "Mnemosyne", event: AstrMessageEvent):
-    """[实现] 列出当前 Milvus 实例中的所有集合"""
-    if not self.milvus_manager or not self.milvus_manager.is_connected():
-        yield event.plain_result("⚠️ Milvus 服务未初始化或未连接。")
+    """[实现] 列出当前向量数据库实例中的所有集合"""
+    vector_db = _get_vector_db(self)
+    if not vector_db or not vector_db.is_connected():
+        yield event.plain_result("⚠️ 向量数据库未初始化或未连接。")
         return
     try:
-        collections = self.milvus_manager.list_collections()
+        collections = vector_db.list_collections()
         if collections is None:
             yield event.plain_result("⚠️ 获取集合列表失败，请检查日志。")
             return
         if not collections:
-            response = "当前 Milvus 实例中没有找到任何集合。"
+            response = "当前向量数据库中没有找到任何集合。"
         else:
-            response = "当前 Milvus 实例中的集合列表：\n" + "\n".join(
+            response = "当前向量数据库中的集合列表：\n" + "\n".join(
                 [f"📚 {col}" for col in collections]
             )
             if self.collection_name in collections:
@@ -71,9 +76,10 @@ async def delete_collection_cmd_impl(
     collection_name: str,
     confirm: str | None = None,
 ):
-    """[实现] 删除指定的 Milvus 集合及其所有数据"""
-    if not self.milvus_manager or not self.milvus_manager.is_connected():
-        yield event.plain_result("⚠️ Milvus 服务未初始化或未连接。")
+    """[实现] 删除指定的向量数据库集合及其所有数据"""
+    vector_db = _get_vector_db(self)
+    if not vector_db or not vector_db.is_connected():
+        yield event.plain_result("⚠️ 向量数据库未初始化或未连接。")
         return
 
     is_current_collection = collection_name == self.collection_name
@@ -84,7 +90,7 @@ async def delete_collection_cmd_impl(
     if confirm != "--confirm":
         yield event.plain_result(
             f"⚠️ 操作确认 ⚠️\n"
-            f"此操作将永久删除 Milvus 集合 '{collection_name}' 及其包含的所有数据！此操作无法撤销！\n"
+            f"此操作将永久删除向量数据库集合 '{collection_name}' 及其包含的所有数据！此操作无法撤销！\n"
             f"{warning_msg}\n\n"
             f"如果您确定要继续，请再次执行命令并添加 `--confirm` 参数:\n"
             f"`/memory drop_collection {collection_name} --confirm`"
@@ -99,9 +105,9 @@ async def delete_collection_cmd_impl(
                 f"管理员 {sender_id} 正在删除当前插件使用的集合 '{collection_name}'！"
             )
 
-        success = self.milvus_manager.drop_collection(collection_name)
+        success = vector_db.drop_collection(collection_name)
         if success:
-            msg = f"✅ 已成功删除 Milvus 集合 '{collection_name}'。"
+            msg = f"✅ 已成功删除向量数据库集合 '{collection_name}'。"
             if is_current_collection:
                 msg += "\n插件使用的集合已被删除，请尽快处理！"
             yield event.plain_result(msg)
@@ -112,7 +118,7 @@ async def delete_collection_cmd_impl(
                 )
         else:
             yield event.plain_result(
-                f"⚠️ 删除集合 '{collection_name}' 的请求已发送，但 Milvus 返回失败。请检查 Milvus 日志获取详细信息。"
+                f"⚠️ 删除集合 '{collection_name}' 的请求已发送，但向量数据库返回失败。请检查日志获取详细信息。"
             )
 
     except Exception as e:
@@ -130,8 +136,9 @@ async def list_records_cmd_impl(
     limit: int = 5,
 ):
     """[实现] 查询指定集合的最新记忆记录 (按创建时间倒序，自动获取最新)"""
-    if not self.milvus_manager or not self.milvus_manager.is_connected():
-        yield event.plain_result("⚠️ Milvus 服务未初始化或未连接。")
+    vector_db = _get_vector_db(self)
+    if not vector_db or not vector_db.is_connected():
+        yield event.plain_result("⚠️ 向量数据库未初始化或未连接。")
         return
 
     # 获取当前会话的 session_id (如果需要按会话过滤)
@@ -159,7 +166,7 @@ async def list_records_cmd_impl(
         return
 
     try:
-        if not self.milvus_manager.has_collection(target_collection):
+        if not vector_db.has_collection(target_collection):
             yield event.plain_result(f"⚠️ 集合 '{target_collection}' 不存在。")
             return
 
@@ -184,7 +191,7 @@ async def list_records_cmd_impl(
             )
         else:
             # 如果没有会话ID上下文，查询所有记录
-            expr = f"{PRIMARY_FIELD_NAME} >= 0"
+            expr = None
             logger.info(
                 "未指定会话 ID，将查询集合 '{target_collection}' 中的所有记录 (上限 {MAX_TOTAL_FETCH_RECORDS} 条)。"
             )
@@ -200,7 +207,7 @@ async def list_records_cmd_impl(
         ]
 
         logger.debug(
-            f"准备查询 Milvus: 集合='{target_collection}', 表达式='{expr}', 限制={limit},输出字段={output_fields}, 总数上限={MAX_TOTAL_FETCH_RECORDS}"
+            f"准备查询向量数据库: 集合='{target_collection}', 表达式='{expr}', 限制={limit},输出字段={output_fields}, 总数上限={MAX_TOTAL_FETCH_RECORDS}"
         )
 
         # 直接使用 Milvus 的 offset 和 limit 参数进行分页查询
@@ -213,9 +220,9 @@ async def list_records_cmd_impl(
         # )
 
         # 重要的修改：移除 Milvus query 的 offset 和 limit 参数，使用总数上限作为 Milvus 的 limit
-        fetched_records = self.milvus_manager.query(
+        fetched_records = vector_db.query(
             collection_name=target_collection,
-            expression=expr,
+            filters=expr,
             output_fields=output_fields,
             limit=MAX_TOTAL_FETCH_RECORDS,  # 使用总数上限作为 Milvus 的 limit
         )
@@ -305,7 +312,7 @@ async def list_records_cmd_impl(
             content_preview = content[:200] + ("..." if len(content) > 200 else "")
             record_session_id = record.get("session_id", "未知会话")
             persona_id = record.get("personality_id", "未知人格")
-            pk = record.get(PRIMARY_FIELD_NAME, "未知ID")  # 获取主键
+            pk = record.get(PRIMARY_FIELD_NAME) or record.get("id", "未知ID")  # 获取主键
 
             response_lines.append(
                 f"#{i} [ID: {pk}]\n"  # 使用从 1 开始的序号
@@ -334,8 +341,9 @@ async def delete_session_memory_cmd_impl(
     confirm: str | None = None,
 ):
     """[实现] 删除指定会话 ID 相关的所有记忆信息"""
-    if not self.milvus_manager or not self.milvus_manager.is_connected():
-        yield event.plain_result("⚠️ Milvus 服务未初始化或未连接。")
+    vector_db = _get_vector_db(self)
+    if not vector_db or not vector_db.is_connected():
+        yield event.plain_result("⚠️ 向量数据库未初始化或未连接。")
         return
 
     if not session_id or not session_id.strip():
@@ -377,8 +385,8 @@ async def delete_session_memory_cmd_impl(
             f"管理员 {sender_id} 请求删除会话 '{session_id_to_delete}' 的所有记忆 (集合: {collection_name}, 表达式: '{expr}') (确认执行)"
         )
 
-        mutation_result = self.milvus_manager.delete(
-            collection_name=collection_name, expression=expr
+        mutation_result = vector_db.delete(
+            collection_name=collection_name, expr=expr
         )
 
         if mutation_result:
@@ -394,7 +402,7 @@ async def delete_session_memory_cmd_impl(
                 logger.info(
                     f"正在刷新 (Flush) 集合 '{collection_name}' 以应用删除操作..."
                 )
-                self.milvus_manager.flush([collection_name])
+                vector_db.flush([collection_name])
                 logger.info(f"集合 '{collection_name}' 刷新完成。删除操作已生效。")
                 yield event.plain_result(
                     f"✅ 已成功删除会话 ID '{session_id_to_delete}' 的所有记忆信息。"
@@ -409,7 +417,7 @@ async def delete_session_memory_cmd_impl(
                 )
         else:
             yield event.plain_result(
-                f"⚠️ 删除会话 ID '{session_id_to_delete}' 记忆的请求失败。请检查 Milvus 日志。"
+                f"⚠️ 删除会话 ID '{session_id_to_delete}' 记忆的请求失败。请检查向量数据库日志。"
             )
 
     except Exception as e:
@@ -428,8 +436,9 @@ async def delete_record_cmd_impl(
     confirm: str | None = None,
 ):
     """[实现] 删除指定会话中的单条记忆记录"""
-    if not self.milvus_manager or not self.milvus_manager.is_connected():
-        yield event.plain_result("⚠️ Milvus 服务未初始化或未连接。")
+    vector_db = _get_vector_db(self)
+    if not vector_db or not vector_db.is_connected():
+        yield event.plain_result("⚠️ 向量数据库未初始化或未连接。")
         return
 
     target_session_id = session_id or event.unified_msg_origin
@@ -453,16 +462,21 @@ async def delete_record_cmd_impl(
         return
 
     try:
-        session_expr = safe_build_milvus_expression(
-            "session_id", target_session_id, "=="
-        )
-        expr = f"{memory_expr} and {session_expr}"
-        mutation_result = self.milvus_manager.delete(
+        db_type = self.config.get("vector_db_type", "chroma").lower()
+        if db_type == "milvus":
+            session_expr = safe_build_milvus_expression(
+                "session_id", target_session_id, "=="
+            )
+            expr = f"{memory_expr} and {session_expr}"
+        else:
+            # 非 Milvus 后端通常把返回给用户的 ID 存在数据库原生 ID 中。
+            expr = f'id == "{memory_id.strip().strip(chr(34)).strip(chr(96))}"'
+        mutation_result = vector_db.delete(
             collection_name=self.collection_name,
-            expression=expr,
+            expr=expr,
         )
         if not mutation_result:
-            yield event.plain_result("⚠️ 删除请求失败，请检查 Milvus 日志。")
+            yield event.plain_result("⚠️ 删除请求失败，请检查向量数据库日志。")
             return
 
         delete_count = (
@@ -470,11 +484,11 @@ async def delete_record_cmd_impl(
             if hasattr(mutation_result, "delete_count")
             else "未知"
         )
-        self.milvus_manager.flush([self.collection_name])
+        vector_db.flush([self.collection_name])
         yield event.plain_result(
             f"✅ 删除请求已执行。会话: {target_session_id}\n"
             f"记录 ID: {memory_id}\n"
-            f"Milvus 返回删除计数: {delete_count}"
+            f"向量数据库返回删除计数: {delete_count}"
         )
     except Exception as e:
         logger.error(
@@ -552,20 +566,21 @@ async def init_memory_system_cmd_impl(
     force: str | None = None,
 ):
     """[实现] 初始化或重新初始化记忆系统"""
-    if not self.milvus_manager:
-        yield event.plain_result("⚠️ Milvus 服务未初始化。")
+    vector_db = _get_vector_db(self)
+    if not vector_db:
+        yield event.plain_result("⚠️ 向量数据库服务未初始化。")
         return
 
-    # 尝试确保连接 - MilvusManager 使用延迟连接，首次操作时才会真正连接
+    # 尝试确保连接 - 向量数据库使用延迟连接，首次操作时才会真正连接
     try:
         # 通过调用一个轻量级操作来触发连接（如果尚未连接）
-        if not self.milvus_manager.is_connected():
+        if not vector_db.is_connected():
             # 尝试连接
-            self.milvus_manager.list_collections()
+            vector_db.list_collections()
     except Exception as e:
-        logger.error(f"尝试连接 Milvus 失败: {e}")
+        logger.error(f"尝试连接向量数据库失败: {e}")
         yield event.plain_result(
-            f"⚠️ 无法连接到 Milvus 服务: {e}\n请检查 Milvus 配置和服务状态。"
+            f"⚠️ 无法连接到向量数据库服务: {e}\n请检查数据库配置和服务状态。"
         )
         return
 
@@ -600,6 +615,26 @@ async def init_memory_system_cmd_impl(
             return
 
         collection_name = self.collection_name
+        db_type = self.config.get("vector_db_type", "chroma").lower()
+
+        if db_type != "milvus":
+            self.config["embedding_dim"] = current_dim
+            from . import initialization
+
+            initialization.initialize_config_and_schema(self)
+            initialization.setup_vector_db_collection_and_index(
+                self, skip_if_not_ready=False
+            )
+            yield event.plain_result(
+                f"✅ 已确认集合 '{collection_name}' 可用 (维度: {current_dim})\n"
+                f"当前向量数据库后端: {db_type}"
+            )
+            return
+
+        if not self.milvus_manager:
+            yield event.plain_result("⚠️ Milvus 管理器未初始化，无法执行 Milvus 专用迁移。")
+            return
+
         needs_migration = False
         old_dim = None
 

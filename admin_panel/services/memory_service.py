@@ -32,6 +32,28 @@ class MemoryService:
         self.plugin = plugin_instance
         self.logger = logger
 
+    def _get_vector_db(self):
+        return getattr(self.plugin, "vector_db", None)
+
+    def _all_records_expr(self) -> str | None:
+        return None
+
+    def _vector_db_type(self) -> str:
+        return str(getattr(self.plugin, "config", {}).get("vector_db_type", "chroma")).lower()
+
+    @staticmethod
+    def _native_id_expr(memory_id: str) -> str:
+        normalized = str(memory_id).strip().strip('"`')
+        return f'id == "{normalized}"'
+
+    @staticmethod
+    def _record_id(result: dict[str, Any]) -> str:
+        native_id = result.get("id")
+        additional = result.get("_additional")
+        if not native_id and isinstance(additional, dict):
+            native_id = additional.get("id")
+        return str(result.get("memory_id") or native_id or "")
+
     async def search_memories(
         self, request: MemorySearchRequest
     ) -> MemorySearchResponse:
@@ -45,10 +67,8 @@ class MemoryService:
             MemorySearchResponse: 搜索结果
         """
         try:
-            if (
-                not self.plugin.milvus_manager
-                or not self.plugin.milvus_manager.is_connected()
-            ):
+            vector_db = self._get_vector_db()
+            if not vector_db or not vector_db.is_connected():
                 return MemorySearchResponse(
                     records=[],
                     total_count=0,
@@ -58,7 +78,7 @@ class MemoryService:
                 )
 
             collection_name = self.plugin.collection_name
-            if not self.plugin.milvus_manager.has_collection(collection_name):
+            if not vector_db.has_collection(collection_name):
                 return MemorySearchResponse(
                     records=[],
                     total_count=0,
@@ -76,25 +96,7 @@ class MemoryService:
 
             # 注意：persona_id 字段可能不存在，需要先检查
             if request.persona_id:
-                # 先检查集合是否有 persona_id 字段
-                collection = self.plugin.milvus_manager.get_collection(collection_name)
-                if collection:
-                    schema_fields = [f.name for f in collection.schema.fields]
-                    if (
-                        "persona_id" in schema_fields
-                        or "personality_id" in schema_fields
-                    ):
-                        # 使用正确的字段名
-                        field_name = (
-                            "personality_id"
-                            if "personality_id" in schema_fields
-                            else "persona_id"
-                        )
-                        expr_parts.append(f'{field_name} == "{request.persona_id}"')
-                    else:
-                        self.logger.warning(
-                            "集合中不存在 persona_id 或 personality_id 字段，跳过人格过滤"
-                        )
+                expr_parts.append(f'personality_id == "{request.persona_id}"')
 
             if request.start_date:
                 start_timestamp = request.start_date.timestamp()
@@ -104,28 +106,10 @@ class MemoryService:
                 end_timestamp = request.end_date.timestamp()
                 expr_parts.append(f"create_time <= {end_timestamp}")
 
-            expr = " && ".join(expr_parts) if expr_parts else ""
+            expr = " and ".join(expr_parts) if expr_parts else ""
 
-            # 动态确定 output_fields
-            collection = self.plugin.milvus_manager.get_collection(collection_name)
-            if not collection:
-                self.logger.error(f"无法获取集合 {collection_name}")
-                return MemorySearchResponse(
-                    records=[],
-                    total_count=0,
-                    page=request.offset // request.limit + 1,
-                    page_size=request.limit,
-                    has_more=False,
-                )
-
-            # 获取实际存在的字段
-            schema_fields = [f.name for f in collection.schema.fields]
             output_fields = ["memory_id", "session_id", "content", "create_time"]
-            # 添加可选字段
-            if "personality_id" in schema_fields:
-                output_fields.append("personality_id")
-            elif "persona_id" in schema_fields:
-                output_fields.append("persona_id")
+            output_fields.append("personality_id")
 
             try:
                 # Milvus 的 query 不保证按 create_time 排序。
@@ -135,7 +119,7 @@ class MemoryService:
                 # - 无额外过滤（expr 为空且无 keyword）时，用“反向 offset”快速取最新页。
                 # - 其它情况（有 keyword/有筛选）则做受控全量拉取 → 全局过滤/排序 → 再分页。
 
-                query_expr = expr if expr else "memory_id >= 0"
+                query_expr = expr if expr else self._all_records_expr()
                 page = request.offset // request.limit + 1
 
                 def _to_record(result: dict[str, Any]) -> MemoryRecord | None:
@@ -156,7 +140,7 @@ class MemoryService:
                         memory_type = result.get("memory_type", "long_term")
 
                         record = MemoryRecord(
-                            memory_id=str(result.get("memory_id", "")),
+                            memory_id=self._record_id(result),
                             session_id=result.get("session_id", ""),
                             content=result.get("content", ""),
                             create_time=create_time_dt,
@@ -175,7 +159,13 @@ class MemoryService:
                     and request.sort_by == "create_time"
                     and request.sort_order == "desc"
                 ):
-                    total_count = int(collection.num_entities)
+                    all_results = vector_db.query(
+                        collection_name=collection_name,
+                        filters=query_expr,
+                        output_fields=output_fields,
+                        limit=10000,
+                    )
+                    total_count = len(all_results)
                     if request.offset >= total_count:
                         return MemorySearchResponse(
                             records=[],
@@ -185,30 +175,12 @@ class MemoryService:
                             has_more=False,
                         )
 
-                    remaining = max(total_count - request.offset, 0)
-                    effective_limit = min(request.limit, remaining)
-                    inverted_offset = max(
-                        total_count - request.offset - effective_limit, 0
-                    )
-
-                    results = self.plugin.milvus_manager.query(
-                        collection_name=collection_name,
-                        expression=query_expr,
-                        output_fields=output_fields,
-                        limit=effective_limit,
-                        offset=inverted_offset,
-                    )
-                    if results is None:
-                        self.logger.error("查询返回 None")
-                        return MemorySearchResponse(
-                            records=[],
-                            total_count=0,
-                            page=page,
-                            page_size=request.limit,
-                            has_more=False,
-                        )
-
                     records: list[MemoryRecord] = []
+                    all_results.sort(
+                        key=lambda item: item.get("create_time", 0) or 0,
+                        reverse=True,
+                    )
+                    results = all_results[request.offset : request.offset + request.limit]
                     for result in results:
                         record = _to_record(result)
                         if record is not None:
@@ -234,9 +206,9 @@ class MemoryService:
                 current_offset = 0
                 while len(fetched) < max_fetch:
                     batch_limit = min(batch_size, max_fetch - len(fetched))
-                    batch = self.plugin.milvus_manager.query(
+                    batch = vector_db.query(
                         collection_name=collection_name,
-                        expression=query_expr,
+                        filters=query_expr,
                         output_fields=output_fields,
                         limit=batch_limit,
                         offset=current_offset,
@@ -283,7 +255,7 @@ class MemoryService:
                 )
 
             except Exception as e:
-                self.logger.error(f"查询 Milvus 失败: {e}", exc_info=True)
+                self.logger.error(f"查询向量数据库失败: {e}", exc_info=True)
                 return MemorySearchResponse(
                     records=[],
                     total_count=0,
@@ -312,30 +284,24 @@ class MemoryService:
         stats = MemoryStatistics()
 
         try:
-            if (
-                not self.plugin.milvus_manager
-                or not self.plugin.milvus_manager.is_connected()
-            ):
+            vector_db = self._get_vector_db()
+            if not vector_db or not vector_db.is_connected():
                 return stats
 
             collection_name = self.plugin.collection_name
-            if not self.plugin.milvus_manager.has_collection(collection_name):
+            if not vector_db.has_collection(collection_name):
                 return stats
 
-            # 获取总记忆数（无需手动加载，query会自动处理）
-            collection = self.plugin.milvus_manager.get_collection(collection_name)
-            stats.total_memories = collection.num_entities
-
             # 查询所有记忆（限制数量以避免性能问题）
-            max_query = min(stats.total_memories, 10000)
+            max_query = 10000
+            results = vector_db.query(
+                collection_name=collection_name,
+                filters=self._all_records_expr(),
+                output_fields=["session_id", "content", "create_time"],
+                limit=max_query,
+            )
+            stats.total_memories = len(results)
             if max_query > 0:
-                results = self.plugin.milvus_manager.query(
-                    collection_name=collection_name,
-                    expression="memory_id >= 0",  # 查询所有记录
-                    output_fields=["session_id", "content", "create_time"],
-                    limit=max_query,
-                )
-
                 # 检查查询结果
                 if not results:
                     self.logger.warning("统计查询返回空结果")
@@ -405,29 +371,31 @@ class MemoryService:
             bool: 是否成功
         """
         try:
-            if (
-                not self.plugin.milvus_manager
-                or not self.plugin.milvus_manager.is_connected()
-            ):
+            vector_db = self._get_vector_db()
+            if not vector_db or not vector_db.is_connected():
                 return False
 
             collection_name = self.plugin.collection_name
-            if not self.plugin.milvus_manager.has_collection(collection_name):
+            if not vector_db.has_collection(collection_name):
                 return False
 
-            # 删除记忆 - memory_id 是 Int64 类型，不需要引号
-            try:
-                # 尝试将 memory_id 转换为整数
-                memory_id_int = int(memory_id)
-                expr = f"memory_id == {memory_id_int}"
-            except ValueError:
-                # 如果转换失败，使用字符串格式（向后兼容）
-                expr = f'memory_id == "{memory_id}"'
+            if self._vector_db_type() == "milvus":
+                # Milvus 的 memory_id 是主键字段；非数字时保留字符串兼容旧记录。
+                try:
+                    memory_id_int = int(memory_id)
+                    expr = f"memory_id == {memory_id_int}"
+                except ValueError:
+                    expr = f'memory_id == "{memory_id}"'
+            else:
+                # 非 Milvus 后端管理面板展示的是数据库原生 ID。
+                expr = self._native_id_expr(memory_id)
 
-            self.plugin.milvus_manager.delete(collection_name, expr)
+            mutation_result = vector_db.delete(collection_name, expr)
+            vector_db.flush([collection_name])
 
-            self.logger.info(f"已删除记忆: {memory_id}")
-            return True
+            delete_count = getattr(mutation_result, "delete_count", None)
+            self.logger.info(f"已删除记忆: {memory_id}, 删除计数: {delete_count}")
+            return delete_count is None or delete_count > 0
 
         except Exception as e:
             self.logger.error(f"删除记忆失败: {e}", exc_info=True)
@@ -444,20 +412,18 @@ class MemoryService:
             int: 删除的记忆数量
         """
         try:
-            if (
-                not self.plugin.milvus_manager
-                or not self.plugin.milvus_manager.is_connected()
-            ):
+            vector_db = self._get_vector_db()
+            if not vector_db or not vector_db.is_connected():
                 return 0
 
             collection_name = self.plugin.collection_name
-            if not self.plugin.milvus_manager.has_collection(collection_name):
+            if not vector_db.has_collection(collection_name):
                 return 0
 
             # 先查询记忆数量 - session_id 是字符串类型，需要引号
-            results = self.plugin.milvus_manager.query(
+            results = vector_db.query(
                 collection_name=collection_name,
-                expression=f'session_id == "{session_id}"',
+                filters=f'session_id == "{session_id}"',
                 output_fields=["memory_id"],
                 limit=10000,
             )
@@ -466,7 +432,8 @@ class MemoryService:
             # 删除记忆 - session_id 是字符串类型，需要引号
             if count > 0:
                 expr = f'session_id == "{session_id}"'
-                self.plugin.milvus_manager.delete(collection_name, expr)
+                vector_db.delete(collection_name, expr)
+                vector_db.flush([collection_name])
 
                 self.logger.info(f"已删除会话 {session_id} 的 {count} 条记忆")
 
@@ -563,20 +530,18 @@ class MemoryService:
             List[Dict]: 会话列表
         """
         try:
-            if (
-                not self.plugin.milvus_manager
-                or not self.plugin.milvus_manager.is_connected()
-            ):
+            vector_db = self._get_vector_db()
+            if not vector_db or not vector_db.is_connected():
                 return []
 
             collection_name = self.plugin.collection_name
-            if not self.plugin.milvus_manager.has_collection(collection_name):
+            if not vector_db.has_collection(collection_name):
                 return []
 
             # 查询所有记忆（无需手动加载，query会自动处理）
-            results = self.plugin.milvus_manager.query(
+            results = vector_db.query(
                 collection_name=collection_name,
-                expression="memory_id >= 0",  # 查询所有记录
+                filters=self._all_records_expr(),  # 查询所有记录
                 output_fields=["session_id", "create_time"],
                 limit=10000,
             )
@@ -664,62 +629,36 @@ class MemoryService:
             List[Dict]: 记忆列表，按相似度排序
         """
         try:
-            if (
-                not self.plugin.milvus_manager
-                or not self.plugin.milvus_manager.is_connected()
-            ):
+            vector_db = self._get_vector_db()
+            if not vector_db or not vector_db.is_connected():
                 return []
 
             collection_name = self.plugin.collection_name
-            if not self.plugin.milvus_manager.has_collection(collection_name):
+            if not vector_db.has_collection(collection_name):
                 return []
 
             # 使用embedding模型生成查询向量
-            if (
-                not hasattr(self.plugin, "embedding_model")
-                or not self.plugin.embedding_model
-            ):
-                self.logger.warning("Embedding模型未初始化，无法进行向量检索")
+            if not getattr(self.plugin, "embedding_provider", None):
+                self.logger.warning("Embedding Provider 未初始化，无法进行向量检索")
                 return []
 
             # 生成查询向量
-            query_vector = self.plugin.embedding_model.encode(query)
-
-            # 获取集合
-            collection = self.plugin.milvus_manager.get_collection(collection_name)
-            if not collection:
-                self.logger.error(f"无法获取集合 {collection_name}")
+            query_vector = await self.plugin.embedding_provider.get_embedding(query)
+            if not query_vector:
                 return []
 
-            # 获取实际存在的字段
-            schema_fields = [f.name for f in collection.schema.fields]
-            output_fields = ["memory_id", "session_id", "content", "create_time"]
-
-            # 添加可选字段
-            if "personality_id" in schema_fields:
-                output_fields.append("personality_id")
-            elif "persona_id" in schema_fields:
-                output_fields.append("persona_id")
-
-            # 执行向量搜索
-            search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
-
-            results = self.plugin.milvus_manager.search(
+            results = vector_db.search(
                 collection_name=collection_name,
-                query_vectors=[query_vector],
-                anns_field="embedding",
-                limit=limit,
-                output_fields=output_fields,
-                search_params=search_params,
+                query_vector=query_vector,
+                top_k=limit,
+                filters=None,
             )
 
             # 转换结果
             memories = []
-            if results and len(results) > 0:
-                for hit in results[0]:
+            if results:
+                for entity in results:
                     try:
-                        entity = hit.entity
-
                         # 获取时间
                         create_time = entity.get("create_time")
                         if isinstance(create_time, (int, float)):
@@ -735,13 +674,14 @@ class MemoryService:
                         )
 
                         memory = {
-                            "memory_id": str(entity.get("memory_id", "")),
+                            "memory_id": self._record_id(entity),
                             "session_id": entity.get("session_id", ""),
                             "content": entity.get("content", ""),
                             "create_time": create_time.isoformat(),
                             "persona_id": persona_id_value,
-                            "similarity_score": 1.0
-                            / (1.0 + hit.distance),  # 转换距离为相似度
+                            "similarity_score": entity.get(
+                                "_score", entity.get("score", 0.0)
+                            ),
                         }
                         memories.append(memory)
                     except Exception as e:
