@@ -4,56 +4,35 @@
 
 ## 5 分钟快速部署
 
-### 步骤 1：安装 Milvus
-
-**方法 A：Docker 部署（推荐）**
-
-```bash
-# 下载配置文件
-wget https://github.com/milvus-io/milvus/releases/download/v2.6.4/milvus-standalone-docker-compose.yml -O docker-compose.yml
-
-# 启动服务
-docker-compose up -d
-
-# 验证运行状态
-docker-compose ps
-```
-
-**方法 B：Milvus Lite（轻量级）**
-
-```bash
-pip install pymilvus
-```
-
-### 步骤 2：安装插件依赖
+### 步骤 1：安装插件依赖
 
 ```bash
 cd data/plugins/astrbot_plugin_mnemosyne
 uv pip install -r requirements.txt
 ```
 
-### 步骤 3：配置插件
+默认会使用 Chroma 本地持久化数据库，无需额外启动数据库服务。
+
+### 步骤 2：配置插件
 
 在 AstrBot WebUI 中配置插件：
 
 1. 打开 **插件管理** → **Mnemosyne**
-2. 设置 Milvus 连接信息：
-   - **主机地址**：`127.0.0.1`（本地部署）
-   - **端口**：`19530`（默认端口）
-   - **集合名称**：`default`（或自定义名称）
-3. 配置记忆总结参数：
+2. 保持 **向量数据库类型** 为 `chroma`
+3. 可选设置 **集合名称**：`mnemosyne_default`（或自定义名称）
+4. 配置记忆总结参数：
    - **对话轮数**：`5`（每 5 轮对话后自动总结）
    - **检索数量**：`5`（返回最相关的 5 条记忆）
    - **相似度阈值**：`0.7`（只返回相似度 ≥ 0.7 的记忆）
 
-### 步骤 4：重启 AstrBot
+### 步骤 3：重启 AstrBot
 
 ```bash
 # 在 AstrBot 根目录
 python main.py
 ```
 
-### 步骤 5：验证功能
+### 步骤 4：验证功能
 
 **测试记忆存储**：
 1. 与机器人进行 5 轮以上对话
@@ -71,11 +50,11 @@ python main.py
 
 ## 常见问题快速解决
 
-### Q1：无法连接 Milvus
+### Q1：无法连接向量数据库
 
 **检查清单**：
 ```bash
-# 1. 验证 Milvus 是否运行
+# 1. 如果使用 Milvus，验证 Milvus 是否运行
 docker ps | grep milvus
 
 # 2. 检查端口是否开放

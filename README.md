@@ -218,7 +218,7 @@
 
 - AstrBot v4.0.0+
 - Python 3.8+
-- Milvus 数据库（可选择 Milvus Lite 或 Standalone）
+- 默认 Chroma 本地数据库（无需额外服务）；可选 Milvus / Qdrant / Weaviate
 - **⚠️ 必须先配置 Embedding Provider**
 
 ### 安装步骤
@@ -240,9 +240,9 @@ uv pip install -r requirements.txt
 <td><strong>2</strong></td>
 <td>
 
-**配置 Milvus**
+**配置向量数据库**
 
-选择以下方式之一：
+默认使用 Chroma 本地持久化模式，无需额外数据库服务。如需改用 Milvus，选择以下方式之一：
 
 - **Milvus Lite**（轻量级，无需额外服务，不支持windows系统）
   ```json
