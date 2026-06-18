@@ -338,16 +338,9 @@ class MilvusManager:
 
     def _add_token_auth(self, context: str):
         """辅助方法：添加 Token 认证信息。"""
-        if (
-            hasattr(connections, "connect")
-            and "token" in connections.connect.__code__.co_varnames
-        ):
-            logger.info(f"使用 Token 进行认证 ({context} 连接, 别名: {self.alias})。")
-            self._connection_info["token"] = self._token
-        else:
-            logger.warning(
-                f"当前 PyMilvus 版本可能不支持 Token 认证，将忽略 Token 参数 ({context} 连接)。"
-            )
+        # PyMilvus 2.5.4+ 已经支持 Token 认证，直接添加
+        logger.info(f"使用 Token 进行认证 ({context} 连接, 别名: {self.alias})。")
+        self._connection_info["token"] = self._token
 
     def _add_user_password_auth(self, context: str):
         """辅助方法：添加 User/Password 认证信息。"""
@@ -360,19 +353,11 @@ class MilvusManager:
     def _add_common_config(self):
         """添加对所有连接模式都可能适用的通用配置，如 db_name。"""
         # 处理 db_name (Milvus 2.2+, 对 Lite 和 Standard 都有效)
-        if (
-            hasattr(connections, "connect")
-            and "db_name" in connections.connect.__code__.co_varnames
-        ):
-            if self._db_name != "default":
-                logger.info(f"将连接到数据库 '{self._db_name}' (别名: {self.alias})。")
-                self._connection_info["db_name"] = self._db_name
-            # else: 不需要记录使用默认库
-        elif self._db_name != "default":
-            mode_name = "Milvus Lite" if self._is_lite else "Standard Milvus"
-            logger.warning(
-                f"当前 PyMilvus 版本可能不支持多数据库，将忽略 db_name='{self._db_name}' (模式: {mode_name})。"
-            )
+        # PyMilvus 2.5.4+ 已经支持多数据库，直接添加 db_name 参数
+        if self._db_name != "default":
+            logger.info(f"将连接到数据库 '{self._db_name}' (别名: {self.alias})。")
+            self._connection_info["db_name"] = self._db_name
+        # else: 使用默认库时不需要显式指定
 
         # 注意：alias 不放入 _connection_info，它是 connections.connect 的独立参数
 

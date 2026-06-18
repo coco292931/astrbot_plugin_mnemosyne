@@ -17,17 +17,6 @@
 3. 使用 schema_utils 模块中的函数进行 Schema 转换和验证
 """
 
-# 导入依赖
-from .milvus_adapter import MilvusVectorDB
-from .milvus_manager import MilvusManager
-from .schema_utils import (
-    collection_schema_to_dict,
-    dict_to_collection_schema,
-    merge_schema_dicts,
-    validate_schema_dict,
-)
-
-
 # 定义一个虚拟的 MilvusDatabase 类以保持向后兼容性
 class MilvusDatabase:
     """虚拟的 MilvusDatabase 类，用于向后兼容（原文件已删除）"""
@@ -43,6 +32,28 @@ class MilvusDatabase:
             "MilvusDatabase 类已被移除，请使用 MilvusVectorDB 适配器类。"
             "详见模块顶部的迁移指南。"
         )
+
+
+def __getattr__(name: str):
+    """Lazy-load Milvus-only exports so non-Milvus adapters stay optional."""
+    if name == "MilvusVectorDB":
+        from .milvus_adapter import MilvusVectorDB
+
+        return MilvusVectorDB
+    if name == "MilvusManager":
+        from .milvus_manager import MilvusManager
+
+        return MilvusManager
+    if name in {
+        "dict_to_collection_schema",
+        "collection_schema_to_dict",
+        "merge_schema_dicts",
+        "validate_schema_dict",
+    }:
+        from . import schema_utils
+
+        return getattr(schema_utils, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # 定义模块的公共接口
