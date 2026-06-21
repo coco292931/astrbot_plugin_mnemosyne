@@ -910,6 +910,31 @@ async def handle_query_memory(
                 f"间隔注入门控：会话 {session_id} 已达 {injection_interval} 轮，本轮触发记忆注入。"
             )
 
+        # --- 间隔注入门控 ---
+        # “每隔 N 轮对话才触发一次记忆插入”。N<=1 表示每轮都注入（保持原行为）。
+        # 该门控仅控制本轮是否执行 RAG 检索与注入，不影响用户消息入库与总结计数。
+        # 注意：此处不累计召回历史，触发时仅注入“当前这一轮”检索到的记忆。
+        injection_interval = plugin.config.get("memory_injection_interval", 1)
+        try:
+            injection_interval = int(injection_interval)
+        except (TypeError, ValueError):
+            injection_interval = 1
+        if injection_interval > 1:
+            counter = plugin._injection_round_counter
+            current = counter.get(session_id, 0) + 1
+            if current < injection_interval:
+                counter[session_id] = current
+                logger.debug(
+                    f"间隔注入门控：会话 {session_id} 当前第 {current}/{injection_interval} 轮，"
+                    f"本轮跳过记忆检索与注入。"
+                )
+                return
+            # 达到间隔阈值，本轮触发注入并重置计数
+            counter[session_id] = 0
+            logger.debug(
+                f"间隔注入门控：会话 {session_id} 已达 {injection_interval} 轮，本轮触发记忆注入。"
+            )
+
         # --- RAG 搜索 ---
         detailed_results = []
         try:
@@ -1496,12 +1521,44 @@ def _format_and_inject_memory(
         else:
             req.contexts.insert(0, payload)
 
+    elif injection_method == "extra_user_parts":
+        # 模仿 koko toolbox 的 <system_WARNING> 注入方式：
+        # 将记忆作为一个额外的用户内容块追加到 req.extra_user_content_parts，
+        # AstrBot 会把它拼接到“当前这条用户消息”之后再发给 LLM。
+        _inject_via_extra_user_parts(req, long_memory)
+
     else:
         logger.warning(
             f"未知的记忆注入方法 '{injection_method}'，将默认追加到用户 prompt。"
         )
         current_prompt = req.prompt if isinstance(req.prompt, str) else ""
         req.prompt = long_memory + "\n" + current_prompt
+
+
+def _inject_via_extra_user_parts(req: ProviderRequest, long_memory: str):
+    """以 koko toolbox 的方式，将记忆作为额外用户内容块注入。
+
+    优先克隆 req.extra_user_content_parts 中已有部件的类型来构造新块（与 koko 一致），
+    退而求其次使用 AstrBot 的 TextPart，最终兜底追加到 req.prompt。
+    """
+    try:
+        parts = getattr(req, "extra_user_content_parts", None)
+        if parts is not None:
+            if parts:
+                # 克隆现有部件类型，确保结构一致
+                req.extra_user_content_parts.append(type(parts[0])(text=long_memory))
+            else:
+                from astrbot.core.agent.message import TextPart
+
+                req.extra_user_content_parts.append(TextPart(text=long_memory))
+            logger.debug("已通过 extra_user_content_parts 注入长期记忆。")
+            return
+    except Exception as e:
+        logger.warning(f"通过 extra_user_content_parts 注入记忆失败，回退到 prompt: {e}")
+
+    # 兜底：追加到用户 prompt 末尾
+    current_prompt = req.prompt if isinstance(req.prompt, str) else ""
+    req.prompt = current_prompt + "\n" + long_memory
 
 
 # 删除补充的长期记忆函数
