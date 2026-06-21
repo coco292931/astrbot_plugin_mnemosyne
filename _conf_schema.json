@@ -177,6 +177,15 @@
         "options":["prepend", "append"],
         "default":"prepend"
     },
+    "memory_injection_interval":{
+        "description":"记忆插入间隔轮数",
+        "type":"int",
+        "hint":"每隔 N 轮（次）对话才触发一次记忆插入。1 表示每轮都插入（默认行为）。该功能不累计召回历史，触发时仅注入当前这一轮检索到的记忆",
+        "obvious_hint":true,
+        "default":1,
+        "minimum":1,
+        "maximum":50
+    },
     "max_prompt_chars_for_embedding":{
         "description":"向量化前最大输入字符数",
         "type":"int",
@@ -202,6 +211,12 @@
         "type":"bool",
         "hint":"减少模型在总结文本中臆造随机年份/日期",
         "default":true
+    },
+    "include_tool_context_in_summary":{
+        "description":"记忆总结时包含工具上下文",
+        "type":"bool",
+        "hint":"开启后，自动总结会把本轮 LLM 工具调用名称、参数和工具返回结果一并纳入总结素材；关闭时只总结用户与助手的普通对话文本",
+        "default":false
     },
     "long_memory_prompt":{
         "description":"对话总结提示词",
