@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 
 def _ensure_dependency_stubs() -> None:
@@ -11,6 +18,7 @@ def _ensure_dependency_stubs() -> None:
         astrbot_api = types.ModuleType("astrbot.api")
         astrbot_api_event = types.ModuleType("astrbot.api.event")
         astrbot_api_provider = types.ModuleType("astrbot.api.provider")
+        astrbot_api_star = types.ModuleType("astrbot.api.star")
         astrbot_core = types.ModuleType("astrbot.core")
         astrbot_core_log = types.ModuleType("astrbot.core.log")
 
@@ -41,20 +49,28 @@ def _ensure_dependency_stubs() -> None:
         class _LLMResponse:
             pass
 
+        class _StarTools:
+            @staticmethod
+            def get_data_dir():
+                return ROOT_DIR / ".test-data"
+
         astrbot_api.logger = _Logger()
         astrbot_api_event.AstrMessageEvent = _AstrMessageEvent
         astrbot_api_provider.ProviderRequest = _ProviderRequest
         astrbot_api_provider.LLMResponse = _LLMResponse
+        astrbot_api_star.StarTools = _StarTools
         astrbot_core_log.LogManager = _LogManager
 
         astrbot.api = astrbot_api
         astrbot.core = astrbot_core
+        astrbot_api.star = astrbot_api_star
         astrbot_core.log = astrbot_core_log
 
         sys.modules["astrbot"] = astrbot
         sys.modules["astrbot.api"] = astrbot_api
         sys.modules["astrbot.api.event"] = astrbot_api_event
         sys.modules["astrbot.api.provider"] = astrbot_api_provider
+        sys.modules["astrbot.api.star"] = astrbot_api_star
         sys.modules["astrbot.core"] = astrbot_core
         sys.modules["astrbot.core.log"] = astrbot_core_log
 
@@ -76,11 +92,20 @@ _ensure_dependency_stubs()
 from core.memory_operations import (  # noqa: E402
     _build_identity_prefixed_user_text,
     _build_lightweight_graph_metadata,
+    _build_turn_marker,
+    _get_last_user_turn_store,
+    _get_event_extra,
+    _mark_turn_once,
     _post_process_search_results,
+    _remember_last_user_turn,
     _resolve_sender_identity,
 )
+from memory_manager.context_manager import ConversationContextManager  # noqa: E402
+from memory_manager.message_counter import MessageCounter  # noqa: E402
 from core.tools import (  # noqa: E402
     extract_query_keywords,
+    format_context_to_string,
+    format_tool_calls_result_to_string,
     pack_memory_content,
     remove_mnemosyne_tags,
     resolve_max_prompt_chars,
@@ -93,6 +118,94 @@ from core.tools import (  # noqa: E402
 class _Plugin:
     def __init__(self, config: dict):
         self.config = config
+
+
+class _ToolFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _ToolCall:
+    def __init__(self, call_id, name, arguments):
+        self.id = call_id
+        self.function = _ToolFunction(name, arguments)
+
+    def model_dump(self):
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {
+                "name": self.function.name,
+                "arguments": self.function.arguments,
+            },
+        }
+
+
+class _ToolCallsInfo:
+    role = "assistant"
+    content = None
+
+    def __init__(self, tool_calls):
+        self.tool_calls = tool_calls
+
+    def model_dump(self):
+        return {
+            "role": self.role,
+            "content": self.content,
+            "tool_calls": [
+                tc.model_dump() if hasattr(tc, "model_dump") else tc
+                for tc in self.tool_calls
+            ],
+        }
+
+
+class _ToolResultMsg:
+    role = "tool"
+
+    def __init__(self, call_id, content):
+        self.tool_call_id = call_id
+        self.content = content
+
+    def model_dump(self):
+        return {
+            "role": self.role,
+            "tool_call_id": self.tool_call_id,
+            "content": self.content,
+        }
+
+
+class _ToolCallsResult:
+    def __init__(self, info, results):
+        self.tool_calls_info = info
+        self.tool_calls_result = results
+
+
+class _SingleArgExtraEvent:
+    def __init__(self, values):
+        self.values = values
+
+    def get_extra(self, key):
+        return self.values.get(key)
+
+
+class _TurnMessageObj:
+    def __init__(self, message_id):
+        self.message_id = message_id
+
+
+class _TurnEvent:
+    unified_msg_origin = "test:FriendMessage:u1"
+
+    def __init__(self, message_id, outline="hello"):
+        self.message_obj = _TurnMessageObj(message_id)
+        self.outline = outline
+
+    def get_sender_id(self):
+        return "u1"
+
+    def get_message_outline(self):
+        return self.outline
 
 
 class TestMemoryMetaHelpers(unittest.TestCase):
@@ -206,6 +319,277 @@ class TestRemoveMnemosyneTags(unittest.TestCase):
         self.assertIs(cleaned[0]["content"], content_parts)
         self.assertTrue(cleaned[0]["_no_save"])
         self.assertEqual(cleaned[0]["custom"], "preserved")
+
+
+class TestSummaryFormatting(unittest.TestCase):
+    def test_turn_marker_dedupes_recreated_event_objects(self) -> None:
+        plugin = _Plugin({})
+        first_event = _TurnEvent("msg-1")
+        second_event = _TurnEvent("msg-1")
+
+        first_marker = _build_turn_marker(
+            plugin, first_event, session_id=first_event.unified_msg_origin
+        )
+        second_marker = _build_turn_marker(
+            plugin, second_event, session_id=second_event.unified_msg_origin
+        )
+
+        self.assertEqual(first_marker, second_marker)
+        self.assertTrue(
+            _mark_turn_once(
+                plugin, "_mnemosyne_processed_request_turns", first_marker
+            )
+        )
+        self.assertFalse(
+            _mark_turn_once(
+                plugin, "_mnemosyne_processed_request_turns", second_marker
+            )
+        )
+
+    def test_empty_turn_marker_fails_closed(self) -> None:
+        plugin = _Plugin({})
+
+        self.assertFalse(
+            _mark_turn_once(plugin, "_mnemosyne_processed_request_turns", "")
+        )
+        self.assertFalse(hasattr(plugin, "_mnemosyne_processed_request_turns"))
+
+    def test_last_user_turn_store_is_bounded_lru(self) -> None:
+        plugin = _Plugin({})
+        for index in range(2050):
+            _remember_last_user_turn(plugin, f"session-{index}", f"marker-{index}")
+
+        store = _get_last_user_turn_store(plugin)
+
+        self.assertEqual(len(store), 2048)
+        self.assertNotIn("session-0", store)
+        self.assertNotIn("session-1", store)
+        self.assertEqual(store["session-2049"], "marker-2049")
+
+    def test_single_arg_get_extra_preserves_explicit_none(self) -> None:
+        event = _SingleArgExtraEvent({"stored": None})
+
+        self.assertIsNone(_get_event_extra(event, "stored", "fallback"))
+        self.assertIsNone(_get_event_extra(event, "missing", "fallback"))
+
+    def test_format_context_excludes_tools_by_default(self) -> None:
+        history = [
+            {"role": "user", "content": "帮我查天气"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"北京\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "北京晴，28度",
+            },
+            {"role": "assistant", "content": "北京今天晴，28度。"},
+        ]
+
+        text = format_context_to_string(history, 4)
+
+        self.assertIn("user:帮我查天气", text)
+        self.assertIn("assistant:北京今天晴，28度。", text)
+        self.assertNotIn("tool result", text)
+        self.assertNotIn("assistant called tool", text)
+
+    def test_format_context_includes_tool_context_when_enabled(self) -> None:
+        history = [
+            {"role": "user", "content": "帮我查天气"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"北京\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "北京晴，28度",
+            },
+            {"role": "assistant", "content": "北京今天晴，28度。"},
+        ]
+
+        text = format_context_to_string(
+            history, 4, include_tool_context=True
+        )
+
+        self.assertIn("assistant called tool get_weather id=call_1", text)
+        self.assertIn("tool result id=call_1: 北京晴，28度", text)
+        self.assertIn("assistant:北京今天晴，28度。", text)
+
+    def test_format_context_preserves_assistant_text_with_tool_calls_order(self) -> None:
+        history = [
+            {"role": "user", "content": "帮我查天气"},
+            {
+                "role": "assistant",
+                "content": "我查一下。",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\":\"北京\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "北京晴，28度",
+            },
+            {"role": "assistant", "content": "北京今天晴，28度。"},
+        ]
+
+        text = format_context_to_string(
+            history, 4, include_tool_context=True
+        )
+
+        self.assertLess(text.index("assistant:我查一下。"), text.index("assistant called tool"))
+        self.assertLess(text.index("assistant called tool"), text.index("tool result"))
+        self.assertLess(text.index("tool result"), text.index("assistant:北京今天晴，28度。"))
+
+    def test_format_context_counts_tool_lines_toward_length(self) -> None:
+        history = [
+            {"role": "user", "content": "帮我查天气"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "北京晴，28度",
+            },
+            {"role": "assistant", "content": "北京今天晴，28度。"},
+        ]
+
+        text = format_context_to_string(
+            history, 2, include_tool_context=True
+        )
+
+        self.assertIn("tool result id=call_1: 北京晴，28度", text)
+        self.assertIn("assistant:北京今天晴，28度。", text)
+        self.assertNotIn("assistant called tool", text)
+        self.assertNotIn("user:帮我查天气", text)
+
+    def test_format_tool_calls_result_supports_model_objects(self) -> None:
+        tool_result = _ToolCallsResult(
+            _ToolCallsInfo([_ToolCall("call_2", "search_koko_tools", '{"query":"记忆"}')]),
+            [_ToolResultMsg("call_2", "找到工具 remember_memory_vector")],
+        )
+
+        text = format_tool_calls_result_to_string([tool_result])
+
+        self.assertIn("assistant called tool search_koko_tools id=call_2", text)
+        self.assertIn('"query":"记忆"', text)
+        self.assertIn("tool result id=call_2: 找到工具 remember_memory_vector", text)
+
+
+class TestMessageCounter(unittest.TestCase):
+    def test_adjust_counter_ignores_tool_context_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            counter = MessageCounter(plugin_data_dir=tmp_dir)
+            try:
+                session_id = "test-session"
+                for _ in range(2):
+                    counter.increment_counter(session_id)
+
+                history = [
+                    {"role": "user", "content": "查一下天气"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "weather",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_1",
+                        "content": "晴",
+                    },
+                    {"role": "assistant", "content": "今天晴。"},
+                ]
+
+                self.assertTrue(
+                    counter.adjust_counter_if_necessary(session_id, history)
+                )
+                self.assertEqual(counter.get_counter(session_id), 2)
+            finally:
+                counter.close()
+
+
+class TestConversationContextManager(unittest.TestCase):
+    def test_clear_role_messages_removes_temporary_tool_context(self) -> None:
+        manager = ConversationContextManager()
+        session_id = "test-session"
+        manager.add_message(session_id, "user", "查天气")
+        manager.add_message(session_id, "tool", "tool result")
+        manager.add_message(session_id, "assistant", "今天晴")
+
+        removed = manager.clear_role_messages(session_id, "tool")
+        history = manager.get_history(session_id)
+
+        self.assertEqual(removed, 1)
+        self.assertEqual([item["role"] for item in history], ["user", "assistant"])
+
+    def test_trim_role_messages_keeps_recent_tool_context(self) -> None:
+        manager = ConversationContextManager()
+        session_id = "test-session"
+        manager.add_message(session_id, "user", "查天气")
+        for index in range(5):
+            manager.add_message(session_id, "tool", f"tool-{index}")
+        manager.add_message(session_id, "assistant", "今天晴")
+
+        removed = manager.trim_role_messages(session_id, "tool", keep_last=2)
+        history = manager.get_history(session_id)
+
+        self.assertEqual(removed, 3)
+        self.assertEqual(
+            [(item["role"], item["content"]) for item in history],
+            [
+                ("user", "查天气"),
+                ("tool", "tool-3"),
+                ("tool", "tool-4"),
+                ("assistant", "今天晴"),
+            ],
+        )
 
 
 class TestLightweightGraphMetadata(unittest.TestCase):

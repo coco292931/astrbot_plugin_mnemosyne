@@ -203,6 +203,12 @@
         "hint":"减少模型在总结文本中臆造随机年份/日期",
         "default":true
     },
+    "include_tool_context_in_summary":{
+        "description":"记忆总结时包含工具上下文",
+        "type":"bool",
+        "hint":"开启后，自动总结会把本轮 LLM 工具调用名称、参数和工具返回结果一并纳入总结素材；关闭时只总结用户与助手的普通对话文本",
+        "default":false
+    },
     "long_memory_prompt":{
         "description":"对话总结提示词",
         "type":"string",
