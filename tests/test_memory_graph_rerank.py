@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
 
 
 def _ensure_dependency_stubs() -> None:
@@ -52,7 +52,7 @@ def _ensure_dependency_stubs() -> None:
         class _StarTools:
             @staticmethod
             def get_data_dir():
-                return ROOT_DIR / ".test-data"
+                return PLUGIN_ROOT / ".test-data"
 
         astrbot_api.logger = _Logger()
         astrbot_api_event.AstrMessageEvent = _AstrMessageEvent
@@ -73,6 +73,12 @@ def _ensure_dependency_stubs() -> None:
         sys.modules["astrbot.api.star"] = astrbot_api_star
         sys.modules["astrbot.core"] = astrbot_core
         sys.modules["astrbot.core.log"] = astrbot_core_log
+
+    try:
+        from pymilvus.exceptions import MilvusException as _MilvusException  # noqa: F401
+        return
+    except ImportError:
+        pass
 
     if "pymilvus.exceptions" not in sys.modules:
         pymilvus = types.ModuleType("pymilvus")

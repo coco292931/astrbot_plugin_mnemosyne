@@ -4,17 +4,28 @@ Mnemosyne 插件初始化逻辑
 """
 
 import platform
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from pymilvus import CollectionSchema, DataType, FieldSchema
+try:
+    from pymilvus import CollectionSchema, DataType, FieldSchema
+except ImportError:
+    CollectionSchema = None
+    FieldSchema = None
+
+    class DataType:
+        """Small fallback matching the Milvus dtype names used in schema dicts."""
+
+        INT64 = "INT64"
+        VARCHAR = "VARCHAR"
+        FLOAT_VECTOR = "FLOAT_VECTOR"
+        BINARY_VECTOR = "BINARY_VECTOR"
 
 from astrbot.api.star import StarTools
 from astrbot.core.log import LogManager
 
 from ..memory_manager.context_manager import ConversationContextManager
 from ..memory_manager.message_counter import MessageCounter
-from ..memory_manager.vector_db.milvus_adapter import MilvusVectorDB
-from ..memory_manager.vector_db.milvus_manager import MilvusManager
 
 # 导入必要的类型和模块
 from .constants import (
@@ -32,6 +43,80 @@ if TYPE_CHECKING:
 
 # 获取初始化专用的日志记录器
 init_logger = LogManager.GetLogger(log_name="MnemosyneInit")
+
+
+@dataclass
+class GenericFieldSchema:
+    """Minimal schema field used when pymilvus is unavailable."""
+
+    name: str
+    dtype: object
+    is_primary: bool = False
+    auto_id: bool = False
+    description: str = ""
+    params: dict = field(default_factory=dict)
+
+
+@dataclass
+class GenericCollectionSchema:
+    """Minimal collection schema used by non-Milvus backends."""
+
+    fields: list[GenericFieldSchema]
+    description: str = ""
+    primary_field: str | None = None
+    enable_dynamic_field: bool = False
+
+
+def _build_field_schema(**kwargs):
+    if FieldSchema is not None:
+        return FieldSchema(**kwargs)
+
+    field_kwargs = dict(kwargs)
+    params = {}
+    for key in ("dim", "max_length"):
+        if key in field_kwargs:
+            params[key] = field_kwargs.pop(key)
+    return GenericFieldSchema(params=params, **field_kwargs)
+
+
+def _build_collection_schema(**kwargs):
+    if CollectionSchema is not None:
+        return CollectionSchema(**kwargs)
+    return GenericCollectionSchema(**kwargs)
+
+
+def _schema_to_dict(schema) -> dict:
+    if isinstance(schema, dict):
+        return schema
+    if CollectionSchema is not None and isinstance(schema, CollectionSchema):
+        from ..memory_manager.vector_db.schema_utils import collection_schema_to_dict
+
+        return collection_schema_to_dict(schema)
+
+    fields = []
+    for field_obj in getattr(schema, "fields", []) or []:
+        field_dict = {
+            "name": getattr(field_obj, "name", ""),
+            "dtype": getattr(field_obj, "dtype", None),
+        }
+        for attr in ("is_primary", "auto_id", "is_nullable", "description"):
+            if hasattr(field_obj, attr):
+                value = getattr(field_obj, attr)
+                if value is not None:
+                    field_dict[attr] = value
+        params = getattr(field_obj, "params", None) or {}
+        if "max_length" in params:
+            field_dict["max_length"] = params["max_length"]
+        if "dim" in params:
+            field_dict["dim"] = params["dim"]
+        fields.append(field_dict)
+
+    return {
+        "fields": fields,
+        "description": getattr(schema, "description", ""),
+        "primary_field": getattr(schema, "primary_field", None),
+        "enable_dynamic_field": getattr(schema, "enable_dynamic_field", False),
+    }
 
 
 def initialize_config_check(plugin: "Mnemosyne"):
@@ -125,38 +210,38 @@ def initialize_config_and_schema(plugin: "Mnemosyne"):
             embedding_dim = DEFAULT_EMBEDDING_DIM
 
         fields = [
-            FieldSchema(
+            _build_field_schema(
                 name=PRIMARY_FIELD_NAME,
                 dtype=DataType.INT64,
                 is_primary=True,
                 auto_id=True,
                 description="唯一记忆标识符",
             ),
-            FieldSchema(
+            _build_field_schema(
                 name="personality_id",
                 dtype=DataType.VARCHAR,
                 max_length=256,
                 description="与记忆关联的角色ID",
             ),
-            FieldSchema(
+            _build_field_schema(
                 name="session_id",
                 dtype=DataType.VARCHAR,
                 max_length=72,
                 description="会话ID",
             ),  # 增加了长度限制
-            FieldSchema(
+            _build_field_schema(
                 name="content",
                 dtype=DataType.VARCHAR,
                 max_length=4096,
                 description="记忆内容（摘要或片段）",
             ),  # 增加了长度限制
-            FieldSchema(
+            _build_field_schema(
                 name=VECTOR_FIELD_NAME,
                 dtype=DataType.FLOAT_VECTOR,
                 dim=embedding_dim,
                 description="记忆的嵌入向量",
             ),
-            FieldSchema(
+            _build_field_schema(
                 name="create_time",
                 dtype=DataType.INT64,
                 description="创建记忆时的时间戳（Unix epoch）",
@@ -166,7 +251,7 @@ def initialize_config_and_schema(plugin: "Mnemosyne"):
         plugin.collection_name = plugin.config.get(
             "collection_name", DEFAULT_COLLECTION_NAME
         )
-        plugin.collection_schema = CollectionSchema(
+        plugin.collection_schema = _build_collection_schema(
             fields=fields,
             description=f"长期记忆存储: {plugin.collection_name}",
             primary_field=PRIMARY_FIELD_NAME,
@@ -174,6 +259,7 @@ def initialize_config_and_schema(plugin: "Mnemosyne"):
                 "enable_dynamic_field", False
             ),  # 是否允许动态字段
         )
+        plugin.collection_schema_dict = _schema_to_dict(plugin.collection_schema)
 
         # 定义索引参数
         plugin.index_params = plugin.config.get(
@@ -213,7 +299,93 @@ def initialize_config_and_schema(plugin: "Mnemosyne"):
         raise  # 重新抛出异常，以便在主 __init__ 中捕获
 
 
+def initialize_vector_db(plugin: "Mnemosyne", plugin_data_dir: str | None = None):
+    """
+    初始化向量数据库（支持多种数据库类型）
+    根据配置中的 vector_db_type 选择并初始化相应的数据库
+
+    Args:
+        plugin: Mnemosyne 插件实例
+        plugin_data_dir: 插件数据目录路径，必须从 main.py 传入
+    """
+    init_logger.debug("开始初始化向量数据库...")
+
+    # 验证必须的 plugin_data_dir 参数
+    if plugin_data_dir is None:
+        init_logger.error("initialize_vector_db 必须接收 plugin_data_dir 参数")
+        raise ValueError("plugin_data_dir 参数不能为 None，必须从 main.py 传入")
+
+    # 获取数据库类型配置
+    db_type = plugin.config.get("vector_db_type", "chroma").lower()
+    init_logger.info(f"配置的向量数据库类型: {db_type}")
+
+    # Windows 下 Milvus Lite 不支持，给出明确提示而非在连接时才报错。
+    if db_type == "milvus" and platform.system() == "Windows":
+        lite_path = plugin.config.get("milvus_lite_path", "")
+        address = plugin.config.get("address", "")
+        if lite_path and not address:
+            init_logger.warning(
+                "检测到 Windows 系统且仅配置了 milvus_lite_path。"
+                "Milvus Lite 不支持 Windows，请在配置中改用 address 连接标准 Milvus 服务，"
+                "或将 vector_db_type 切换为 chroma 以使用本地模式。"
+            )
+
+    try:
+        # 使用工厂模式创建数据库实例
+        from ..memory_manager.vector_db.factory import VectorDatabaseFactory
+
+        vector_db = VectorDatabaseFactory.create_vector_db(
+            db_type=db_type,
+            config=plugin.config,
+            plugin_data_dir=plugin_data_dir
+        )
+
+        # 保存数据库实例（兼容旧代码）
+        plugin.vector_db = vector_db
+        plugin.milvus_adapter = None
+        plugin.milvus_manager = None
+
+        # 如果是 Milvus，保持向后兼容
+        if db_type == "milvus":
+            plugin.milvus_adapter = vector_db
+            plugin.milvus_manager = vector_db._manager
+
+        init_logger.info(f"✅ {db_type.capitalize()} 向量数据库已初始化")
+
+        # 设置集合和索引
+        init_logger.debug("开始设置向量数据库集合和索引...")
+        setup_vector_db_collection_and_index(plugin, skip_if_not_ready=True)
+        init_logger.info("向量数据库集合和索引设置流程已调用")
+
+        init_logger.debug("向量数据库初始化流程成功完成")
+
+    except Exception as e:
+        init_logger.error(
+            f"向量数据库初始化或设置过程中发生错误: {e}", exc_info=True
+        )
+        plugin.vector_db = None
+        plugin.milvus_manager = None
+        plugin.milvus_adapter = None
+        # 不再抛出异常，允许插件以降级模式运行
+
+
 def initialize_milvus(plugin: "Mnemosyne", plugin_data_dir: str | None = None):
+    """
+    初始化 MilvusManager（保留用于向后兼容）
+
+    注意：此函数已被 initialize_vector_db 替代，
+    建议使用新函数以支持多种数据库类型。
+
+    Args:
+        plugin: Mnemosyne 插件实例
+        plugin_data_dir: 插件数据目录路径，必须从 main.py 传入
+    """
+    init_logger.warning(
+        "initialize_milvus 已被弃用，建议使用 initialize_vector_db。"
+        "将自动调用新函数..."
+    )
+    initialize_vector_db(plugin, plugin_data_dir)
+    return
     """
     初始化 MilvusManager。
     根据配置决定连接到 Milvus Lite 或标准 Milvus 服务器，
@@ -513,31 +685,28 @@ def initialize_milvus(plugin: "Mnemosyne", plugin_data_dir: str | None = None):
         # 不再抛出异常，允许插件以降级模式运行
 
 
-def setup_milvus_collection_and_index(
+
+def setup_vector_db_collection_and_index(
     plugin: "Mnemosyne", skip_if_not_ready: bool = False
 ):
     """
-    确保 Milvus 集合和索引存在并已加载。
+    确保向量数据库集合和索引存在并已加载（支持多种数据库类型）
 
     Args:
         plugin: Mnemosyne 插件实例
         skip_if_not_ready: 如果为 True，当 embedding_provider 未就绪时跳过集合创建
     """
-    # 检查是否使用适配器
-    use_adapter = plugin.config.get("use_milvus_adapter", False)
+    # 获取数据库实例
+    vector_db = getattr(plugin, "vector_db", None)
 
-    # 获取管理器实例
-    manager = None
-    if use_adapter and hasattr(plugin, "milvus_adapter"):
-        manager = plugin.milvus_adapter
-    elif hasattr(plugin, "milvus_manager"):
-        manager = plugin.milvus_manager
+    schema_dict = getattr(plugin, "collection_schema_dict", None)
+    if not schema_dict and getattr(plugin, "collection_schema", None):
+        schema_dict = _schema_to_dict(plugin.collection_schema)
+        plugin.collection_schema_dict = schema_dict
 
-    if not manager or not plugin.collection_schema:
-        init_logger.error("无法设置 Milvus 集合/索引：管理器或 Schema 未初始化。")
-        raise RuntimeError(
-            "MilvusManager/MilvusVectorDB 或 CollectionSchema 未准备好。"
-        )
+    if not vector_db or not schema_dict:
+        init_logger.error("无法设置向量数据库集合/索引：数据库或 Schema 未初始化。")
+        raise RuntimeError("VectorDatabase 或 CollectionSchema 未准备好。")
 
     collection_name = plugin.collection_name
 
@@ -549,89 +718,73 @@ def setup_milvus_collection_and_index(
         )
         return
 
-    # ========== 修复：在检查集合前先明确验证连接状态 ==========
-    # 这样可以提前发现连接问题，给出明确的错误信息，而不是等到 has_collection 调用时才发现
+    # 验证连接状态
     try:
-        init_logger.debug("验证 Milvus 连接状态...")
+        init_logger.debug("验证向量数据库连接状态...")
 
         # 如果尚未连接，尝试建立连接
-        if not manager.is_connected():
-            init_logger.info("Milvus 尚未连接，尝试建立连接...")
-            manager.connect()
+        if not vector_db.is_connected():
+            init_logger.info("向量数据库尚未连接，尝试建立连接...")
+            vector_db.connect()
 
         # 再次验证连接状态
-        if not manager.is_connected():
-            raise ConnectionError("无法建立 Milvus 连接")
+        if not vector_db.is_connected():
+            raise ConnectionError("无法建立向量数据库连接")
 
-        init_logger.info("✅ Milvus 连接状态正常")
+        init_logger.info("✅ 向量数据库连接状态正常")
 
     except Exception as e:
-        # 获取管理器类型以提供更精确的错误信息
-        try:
-            if use_adapter:
-                # MilvusVectorDB 适配器内部有 _manager 属性
-                mode_name = (
-                    "Milvus Lite"
-                    if getattr(getattr(manager, "_manager", None), "_is_lite", False)
-                    else "标准 Milvus"
-                )
-            else:
-                # MilvusManager 直接有 _is_lite 属性
-                mode_name = (
-                    "Milvus Lite"
-                    if getattr(manager, "_is_lite", False)
-                    else "标准 Milvus"
-                )
-        except (AttributeError, TypeError):
-            # 如果无法获取类型信息，使用通用名称
-            mode_name = "Milvus"
-
         init_logger.error(
-            f"{mode_name} 连接失败: {e}\n"
-            f"提示：如果是 Milvus Lite，请检查数据目录权限和磁盘空间；"
-            f"如果是标准 Milvus，请检查服务是否运行和网络连接",
+            f"向量数据库连接失败: {e}\n"
+            f"提示：请检查数据库服务是否运行和网络连接",
             exc_info=True,
         )
-        raise ConnectionError(f"无法连接到 {mode_name}: {e}") from e
-    # ========== 修复结束 ==========
+        raise ConnectionError(f"无法连接到向量数据库: {e}") from e
 
     # 检查集合是否存在
-    if manager.has_collection(collection_name):
-        init_logger.info(f"集合 '{collection_name}' 已存在。开始检查 Schema 一致性...")
-        check_schema_consistency(plugin, collection_name, plugin.collection_schema)
-        # 注意: check_schema_consistency 目前只记录警告，不阻止后续操作
+    try:
+        has_collection = collection_name in vector_db.list_collections()
+    except Exception as e:
+        init_logger.error(f"检查集合是否存在时出错: {e}")
+        has_collection = False
+
+    if has_collection:
+        init_logger.info(f"集合 '{collection_name}' 已存在。")
     else:
         # 如果集合不存在，则创建集合
         init_logger.info(f"未找到集合 '{collection_name}'。正在创建...")
 
-        # 根据使用的类型选择创建方法
-        if use_adapter:
-            # 使用适配器创建集合（传递 CollectionSchema 对象）
-            # 注意：MilvusVectorDB 的 create_collection 方法接受 dict，但这里需要处理类型
-            from ..memory_manager.vector_db.schema_utils import (
-                collection_schema_to_dict,
-            )
+        try:
+            vector_db.create_collection(collection_name, schema_dict)
+            init_logger.info(f"成功创建集合 '{collection_name}'。")
 
-            schema_dict = collection_schema_to_dict(plugin.collection_schema)
-            # 类型注解：schema_dict 是 dict，但 create_collection 期望 CollectionSchema
-            # 实际上适配器内部会处理这个转换
-            manager.create_collection(collection_name, schema_dict)  # type: ignore
-        else:
-            # 使用管理器创建集合
-            if not manager.create_collection(collection_name, plugin.collection_schema):
-                raise RuntimeError(f"创建 Milvus 集合 '{collection_name}' 失败。")
+        except Exception as e:
+            init_logger.error(f"创建集合 '{collection_name}' 失败: {e}")
+            raise RuntimeError(f"创建向量数据库集合 '{collection_name}' 失败。") from e
 
-        init_logger.info(f"成功创建集合 '{collection_name}'。")
+    # 对于 Milvus，确保索引存在
+    db_type = plugin.config.get("vector_db_type", "chroma").lower()
+    if db_type == "milvus":
+        ensure_milvus_index(plugin, collection_name)
 
-    # 确保索引存在（只调用一次）
-    ensure_milvus_index(plugin, collection_name)
-
-    # 采用延迟加载策略：不在初始化时加载集合，而是在首次使用时按需加载
-    # 这样可以避免在集合尚未准备好时就尝试加载，从而避免 code=101 错误
     init_logger.info(
-        f"集合 '{collection_name}' 已创建并建立索引。"
+        f"集合 '{collection_name}' 已准备就绪。"
         f"采用延迟加载策略，集合将在首次查询或插入时自动加载到内存。"
     )
+
+
+def setup_milvus_collection_and_index(
+    plugin: "Mnemosyne", skip_if_not_ready: bool = False
+):
+    """
+    确保 Milvus 集合和索引存在并已加载（保留用于向后兼容）
+
+    Args:
+        plugin: Mnemosyne 插件实例
+        skip_if_not_ready: 如果为 True，当 embedding_provider 未就绪时跳过集合创建
+    """
+    setup_vector_db_collection_and_index(plugin, skip_if_not_ready)
+
 
 
 def ensure_milvus_index(plugin: "Mnemosyne", collection_name: str):

@@ -3,13 +3,15 @@ Milvus 适配器实现
 使用适配器模式将 MilvusManager 适配到 VectorDatabase 接口
 """
 
+from __future__ import annotations
+
 from typing import Any
 
 from pymilvus import Collection
 
 from astrbot.core.log import LogManager
 
-from ..vector_db_base import VectorDatabase
+from ..vector_db_base import VectorDatabase, VectorDeleteResult, VectorInsertResult
 from .milvus_manager import MilvusManager
 from .schema_utils import collection_schema_to_dict, dict_to_collection_schema
 
@@ -74,6 +76,7 @@ class MilvusVectorDB(VectorDatabase):
 
         # 集合缓存，用于提高性能
         self._collection_cache: dict[str, Collection] = {}
+        self._is_connected = False
 
         logger.info(f"MilvusVectorDB 适配器已初始化 (别名: {alias})")
 
@@ -88,10 +91,17 @@ class MilvusVectorDB(VectorDatabase):
         """
         try:
             self._manager.connect()
+            self._is_connected = self._manager.is_connected()
             logger.info("MilvusVectorDB 已成功连接")
         except Exception as e:
+            self._is_connected = False
             logger.error(f"MilvusVectorDB 连接失败: {e}")
             raise
+
+    def is_connected(self) -> bool:
+        """返回当前连接状态。"""
+        self._is_connected = self._manager.is_connected()
+        return self._is_connected
 
     def create_collection(self, collection_name: str, schema: dict[str, Any]):
         """
@@ -121,7 +131,9 @@ class MilvusVectorDB(VectorDatabase):
             logger.error(f"创建集合 '{collection_name}' 失败: {e}")
             raise
 
-    def insert(self, collection_name: str, data: list[dict[str, Any]]):
+    def insert(
+        self, collection_name: str, data: list[dict[str, Any]]
+    ) -> VectorInsertResult:
         """
         插入数据
 
@@ -136,15 +148,27 @@ class MilvusVectorDB(VectorDatabase):
 
             if result:
                 logger.info(f"成功向集合 '{collection_name}' 插入 {len(data)} 条数据")
+                insert_count = getattr(result, "insert_count", len(data))
+                primary_keys = list(getattr(result, "primary_keys", []) or [])
+                return VectorInsertResult(
+                    insert_count=insert_count,
+                    primary_keys=primary_keys,
+                )
             else:
                 logger.error(f"向集合 '{collection_name}' 插入数据失败")
+                return VectorInsertResult()
 
         except Exception as e:
             logger.error(f"插入数据到集合 '{collection_name}' 失败: {e}")
             raise
 
     def query(
-        self, collection_name: str, filters: str, output_fields: list[str]
+        self,
+        collection_name: str,
+        filters: str | None,
+        output_fields: list[str] | None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         根据条件查询数据
@@ -161,8 +185,10 @@ class MilvusVectorDB(VectorDatabase):
             # 使用 MilvusManager 查询数据
             results = self._manager.query(
                 collection_name=collection_name,
-                expression=filters,
+                expression=filters or "memory_id >= 0",
                 output_fields=output_fields,
+                limit=limit,
+                offset=offset,
             )
 
             if results is not None:
@@ -182,6 +208,8 @@ class MilvusVectorDB(VectorDatabase):
         query_vector: list[float],
         top_k: int,
         filters: str | None = None,
+        search_params: dict[str, Any] | None = None,
+        output_fields: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         执行相似性搜索
@@ -216,14 +244,18 @@ class MilvusVectorDB(VectorDatabase):
                 collection_name=collection_name,
                 query_vectors=[query_vector],
                 vector_field=vector_field,
-                search_params={"metric_type": "L2", "params": {"nprobe": 10}},
+                search_params=search_params
+                or {"metric_type": "L2", "params": {"nprobe": 10}},
                 limit=top_k,
                 expression=filters,
-                output_fields=["*"],
+                output_fields=output_fields or ["*"],
             )
 
-            # 格式化搜索结果
-            formatted_results = self._manager.format_search_results(raw_results)
+            # 格式化搜索结果并转为业务层直接使用的扁平记录
+            formatted_results = [
+                self._flatten_search_result(item)
+                for item in self._manager.format_search_results(raw_results)
+            ]
 
             logger.info(
                 f"从集合 '{collection_name}' 搜索到 {len(formatted_results)} 条结果"
@@ -240,6 +272,7 @@ class MilvusVectorDB(VectorDatabase):
         """
         try:
             self._manager.disconnect()
+            self._is_connected = False
             # 清空集合缓存
             self._collection_cache.clear()
             logger.info("MilvusVectorDB 连接已关闭")
@@ -261,6 +294,10 @@ class MilvusVectorDB(VectorDatabase):
         except Exception as e:
             logger.error(f"获取集合列表失败: {e}")
             raise
+
+    def has_collection(self, collection_name: str) -> bool:
+        """判断集合是否存在。"""
+        return self._manager.has_collection(collection_name)
 
     def get_loaded_collections(self) -> list[str]:
         """
@@ -332,7 +369,7 @@ class MilvusVectorDB(VectorDatabase):
             logger.error(f"获取集合 '{collection_name}' 的最新记忆失败: {e}")
             raise
 
-    def delete(self, collection_name: str, expr: str):
+    def delete(self, collection_name: str, expr: str) -> VectorDeleteResult:
         """
         根据条件删除记忆
 
@@ -350,14 +387,21 @@ class MilvusVectorDB(VectorDatabase):
                 logger.info(
                     f"成功从集合 '{collection_name}' 删除匹配条件 '{expr}' 的记录"
                 )
+                delete_count = getattr(result, "delete_count", None)
+                return VectorDeleteResult(delete_count=delete_count)
             else:
                 logger.error(f"从集合 '{collection_name}' 删除记录失败")
+                return VectorDeleteResult(delete_count=0)
 
         except Exception as e:
             logger.error(f"从集合 '{collection_name}' 删除记录失败: {e}")
             raise
 
-    def drop_collection(self, collection_name: str) -> None:
+    def flush(self, collection_names: list[str] | None = None) -> bool:
+        """刷新集合，确保写入/删除尽快可见。"""
+        return self._manager.flush(collection_names)
+
+    def drop_collection(self, collection_name: str) -> bool:
         """
         删除指定的集合（包括其下的所有数据）
 
@@ -376,6 +420,7 @@ class MilvusVectorDB(VectorDatabase):
                 logger.info(f"成功删除集合 '{collection_name}'")
             else:
                 logger.error(f"删除集合 '{collection_name}' 失败")
+            return bool(success)
 
         except Exception as e:
             logger.error(f"删除集合 '{collection_name}' 失败: {e}")
@@ -512,7 +557,26 @@ class MilvusVectorDB(VectorDatabase):
             # 缓存集合对象
             self._collection_cache[collection_name] = collection
 
-        return collection
+            return collection
+
+    @staticmethod
+    def _flatten_search_result(result: dict[str, Any]) -> dict[str, Any]:
+        """将 MilvusManager 的统一搜索包装转成记忆记录。"""
+        entity = result.get("entity", {})
+        if isinstance(entity, dict) and "entity" in entity and isinstance(
+            entity.get("entity"), dict
+        ):
+            entity = entity["entity"]
+        record = dict(entity) if isinstance(entity, dict) else {}
+        if "id" not in record and "memory_id" not in record:
+            record["id"] = result.get("id")
+        distance = result.get("distance")
+        if isinstance(distance, (int, float)):
+            record["_distance"] = float(distance)
+        score = result.get("score")
+        if isinstance(score, (int, float)):
+            record["_score"] = float(score)
+        return record
 
     def get_connection_info(self) -> dict[str, Any]:
         """

@@ -78,6 +78,11 @@ Thumbs.db
 # Documentation
 docs/_build/
 docs/.doctrees/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# Node / VitePress
+node_modules/
 
 # Project specific
 *.db-journal

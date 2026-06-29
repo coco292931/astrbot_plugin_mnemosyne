@@ -13,6 +13,14 @@
         "_special":"select_embedding_provider",
         "default":""
     },
+    "vector_db_type":{
+        "description":"向量数据库类型",
+        "type":"string",
+        "hint":"选择使用的向量数据库类型。Chroma 本地模式无需额外服务，最适合新手上手；Milvus 适合大规模部署，Qdrant 性能优秀，Weaviate 功能全面",
+        "obvious_hint":true,
+        "options":["chroma", "milvus", "qdrant", "weaviate"],
+        "default":"chroma"
+    },
     "milvus_lite_path":{
         "description":"milvus数据库的lite模式路径",
         "type":"string",
@@ -61,6 +69,107 @@
             "password":{
                 "description":"milvus数据库的认证密码",
                 "type":"string",
+                "minLength":0
+            }
+        }
+    },
+    "chroma_config":{
+        "description":"Chroma 向量数据库配置",
+        "type":"object",
+        "hint":"仅当 vector_db_type 为 chroma 时生效",
+        "obvious_hint":true,
+        "items":{
+            "persist_directory":{
+                "description":"Chroma 数据持久化目录",
+                "type":"string",
+                "hint":"留空则使用插件默认数据目录下的 chroma_data",
+                "default":"",
+                "minLength":0
+            },
+            "host":{
+                "description":"Chroma 服务器地址（客户端模式）",
+                "type":"string",
+                "hint":"使用客户端模式时填写。留空则使用本地持久化模式",
+                "default":"",
+                "minLength":0
+            },
+            "port":{
+                "description":"Chroma 服务器端口",
+                "type":"int",
+                "hint":"默认 8000",
+                "default":8000,
+                "minimum":1,
+                "maximum":65535
+            }
+        }
+    },
+    "qdrant_config":{
+        "description":"Qdrant 向量数据库配置",
+        "type":"object",
+        "hint":"仅当 vector_db_type 为 qdrant 时生效",
+        "obvious_hint":true,
+        "items":{
+            "path":{
+                "description":"Qdrant 数据持久化目录",
+                "type":"string",
+                "hint":"留空则使用插件默认数据目录下的 qdrant_data",
+                "default":"",
+                "minLength":0
+            },
+            "url":{
+                "description":"Qdrant 服务器地址（客户端模式）",
+                "type":"string",
+                "hint":"使用客户端模式时填写，如 http://localhost:6333。留空则使用本地持久化模式",
+                "default":"",
+                "minLength":0
+            },
+            "api_key":{
+                "description":"Qdrant API 密钥",
+                "type":"string",
+                "hint":"客户端模式使用的 API 密钥（可选）",
+                "default":"",
+                "minLength":0
+            },
+            "distance":{
+                "description":"距离度量类型",
+                "type":"string",
+                "hint":"向量距离计算方式：Cosine（余弦相似度）、Euclidean（欧氏距离）、Dot（点积）",
+                "options":["Cosine", "Euclidean", "Dot"],
+                "default":"Cosine"
+            }
+        }
+    },
+    "weaviate_config":{
+        "description":"Weaviate 向量数据库配置",
+        "type":"object",
+        "hint":"仅当 vector_db_type 为 weaviate 时生效",
+        "obvious_hint":true,
+        "items":{
+            "embedded":{
+                "description":"使用嵌入式模式",
+                "type":"bool",
+                "hint":"启用嵌入式模式（本地运行，无需外部服务）",
+                "default":false
+            },
+            "persistence_data_path":{
+                "description":"嵌入式模式数据目录",
+                "type":"string",
+                "hint":"嵌入式模式的持久化路径。留空则使用插件默认数据目录下的 weaviate_data",
+                "default":"",
+                "minLength":0
+            },
+            "url":{
+                "description":"Weaviate 服务器地址",
+                "type":"string",
+                "hint":"客户端模式使用，如 http://localhost:8080",
+                "default":"",
+                "minLength":0
+            },
+            "api_key":{
+                "description":"Weaviate API 密钥",
+                "type":"string",
+                "hint":"客户端模式使用的 API 密钥（可选）",
+                "default":"",
                 "minLength":0
             }
         }
