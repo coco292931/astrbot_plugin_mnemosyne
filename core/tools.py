@@ -17,6 +17,7 @@ DEFAULT_EMBEDDING_MAX_CHARS = 4000
 TRUNCATED_SUFFIX = "…(truncated)"
 DEFAULT_SUMMARY_TEXT_MAX_CHARS = 2000
 DEFAULT_TOOL_TEXT_MAX_CHARS = 1200
+DEFAULT_TOOL_CONTEXT_LINE_LIMIT = 12
 
 
 def _truncate_text(text: str, max_chars: int = DEFAULT_SUMMARY_TEXT_MAX_CHARS) -> str:
@@ -410,19 +411,25 @@ def format_context_to_string(
     context_history: list[dict[str, str] | str],
     length: int = 10,
     include_tool_context: bool = False,
+    tool_context_limit: int = DEFAULT_TOOL_CONTEXT_LINE_LIMIT,
 ) -> str:
     """
     从上下文历史记录中提取最后 'length' 条用户和AI的对话消息，
     并将它们的内容转换为用换行符分隔的字符串。
+    tool_context_limit 单独限制工具调用上下文，避免挤占普通对话额度。
     """
     if length <= 0:
         return ""
 
     selected_blocks: list[list[str]] = []
-    count = 0
+    dialog_count = 0
+    tool_count = 0
+    tool_context_limit = max(0, int(tool_context_limit))
 
     for message in reversed(context_history):
-        if count >= length:
+        if dialog_count >= length and (
+            not include_tool_context or tool_count >= tool_context_limit
+        ):
             break
 
         role = None
@@ -448,25 +455,26 @@ def format_context_to_string(
                             tool_lines.append(f"tool context: {tool_text}")
 
         block: list[str] = []
-        block_count = 0
+        has_dialog_line = False
         if content is not None and role in ("user", "assistant"):
             safe_text = _content_to_safe_text(content)
-            if safe_text.strip():
+            if safe_text.strip() and dialog_count < length:
                 block.append(f"{role}:{safe_text}\n")
-                block_count += 1
+                has_dialog_line = True
 
         if include_tool_context and tool_lines:
-            remaining = length - count - block_count
+            remaining = tool_context_limit - tool_count
             if remaining > 0:
                 selected_tool_lines = tool_lines[:remaining]
                 block.extend(line + "\n" for line in selected_tool_lines)
-                block_count += len(selected_tool_lines)
+                tool_count += len(selected_tool_lines)
 
         if not block:
             continue
 
         selected_blocks.append(block)
-        count += block_count
+        if has_dialog_line:
+            dialog_count += 1
 
     selected_lines: list[str] = []
     for block in reversed(selected_blocks):

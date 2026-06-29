@@ -476,7 +476,7 @@ class TestSummaryFormatting(unittest.TestCase):
         self.assertLess(text.index("assistant called tool"), text.index("tool result"))
         self.assertLess(text.index("tool result"), text.index("assistant:北京今天晴，28度。"))
 
-    def test_format_context_counts_tool_lines_toward_length(self) -> None:
+    def test_format_context_keeps_dialog_length_separate_from_tool_context(self) -> None:
         history = [
             {"role": "user", "content": "帮我查天气"},
             {
@@ -504,8 +504,32 @@ class TestSummaryFormatting(unittest.TestCase):
 
         self.assertIn("tool result id=call_1: 北京晴，28度", text)
         self.assertIn("assistant:北京今天晴，28度。", text)
-        self.assertNotIn("assistant called tool", text)
-        self.assertNotIn("user:帮我查天气", text)
+        self.assertIn("user:帮我查天气", text)
+
+    def test_format_context_limits_tool_context_separately(self) -> None:
+        history = [
+            {"role": "user", "content": "帮我查天气"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "北京晴，28度",
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_2",
+                "content": "上海雨，24度",
+            },
+            {"role": "assistant", "content": "查好了。"},
+        ]
+
+        text = format_context_to_string(
+            history, 2, include_tool_context=True, tool_context_limit=1
+        )
+
+        self.assertIn("user:帮我查天气", text)
+        self.assertIn("assistant:查好了。", text)
+        self.assertIn("tool result id=call_2: 上海雨，24度", text)
+        self.assertNotIn("tool result id=call_1: 北京晴，28度", text)
 
     def test_format_tool_calls_result_supports_model_objects(self) -> None:
         tool_result = _ToolCallsResult(
