@@ -476,6 +476,42 @@ class TestSummaryFormatting(unittest.TestCase):
         self.assertLess(text.index("assistant called tool"), text.index("tool result"))
         self.assertLess(text.index("tool result"), text.index("assistant:北京今天晴，28度。"))
 
+    def test_format_context_uses_multimodal_placeholders(self) -> None:
+        history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "看看这张图"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAAA"},
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": {
+                    "type": "audio_url",
+                    "audio_url": {"url": "data:audio/wav;base64,BBBB"},
+                },
+            },
+            {"role": "user", "content": "base64://CCCC"},
+            {"role": "assistant", "content": "data:audio/mp3;base64,DDDD"},
+        ]
+
+        text = format_context_to_string(history, 4)
+
+        self.assertIn("user:看看这张图 [图片]", text)
+        self.assertIn("assistant:[音频]", text)
+        self.assertIn("user:[图片]", text)
+        self.assertNotIn("AAAA", text)
+        self.assertNotIn("BBBB", text)
+        self.assertNotIn("CCCC", text)
+        self.assertNotIn("DDDD", text)
+        self.assertNotIn("data:image", text)
+        self.assertNotIn("data:audio", text)
+        self.assertNotIn("base64://", text)
+
     def test_format_context_keeps_dialog_length_separate_from_tool_context(self) -> None:
         history = [
             {"role": "user", "content": "帮我查天气"},
