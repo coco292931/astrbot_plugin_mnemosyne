@@ -50,10 +50,69 @@ if TYPE_CHECKING:
 
 logger = LogManager.GetLogger(__name__)
 
+_INJECTION_COUNTER_MAX_SESSIONS = 128
+
 
 def _get_vector_db(plugin: "Mnemosyne"):
     """获取当前配置的向量数据库实例。"""
     return getattr(plugin, "vector_db", None)
+
+
+def _resolve_injection_counter_max_sessions(plugin: "Mnemosyne") -> int:
+    raw_limit = plugin.config.get(
+        "memory_injection_counter_max_sessions",
+        _INJECTION_COUNTER_MAX_SESSIONS,
+    )
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = _INJECTION_COUNTER_MAX_SESSIONS
+    return max(1, limit)
+
+
+def _evict_injection_counter_session(
+    counter: dict[str, int],
+    protected_session_id: str,
+) -> None:
+    for existing_session_id in list(counter.keys()):
+        if existing_session_id != protected_session_id:
+            counter.pop(existing_session_id, None)
+            return
+
+
+def _cleanup_injection_round_counter(
+    plugin: "Mnemosyne",
+    active_session_id: str,
+) -> dict[str, int]:
+    counter = getattr(plugin, "_injection_round_counter", None)
+    if not isinstance(counter, dict):
+        counter = {}
+        plugin._injection_round_counter = counter
+
+    context_manager = getattr(plugin, "context_manager", None)
+    conversations = getattr(context_manager, "conversations", None)
+    if isinstance(conversations, dict):
+        active_sessions = set(conversations.keys())
+        for stored_session_id in list(counter.keys()):
+            if (
+                stored_session_id != active_session_id
+                and stored_session_id not in active_sessions
+            ):
+                counter.pop(stored_session_id, None)
+
+    max_sessions = _resolve_injection_counter_max_sessions(plugin)
+    while len(counter) >= max_sessions and active_session_id not in counter:
+        before = len(counter)
+        _evict_injection_counter_session(counter, active_session_id)
+        if len(counter) == before:
+            break
+    while len(counter) > max_sessions:
+        before = len(counter)
+        _evict_injection_counter_session(counter, active_session_id)
+        if len(counter) == before:
+            break
+
+    return counter
 
 
 def _extract_explicit_memory_content(prompt: str) -> str | None:
@@ -502,6 +561,25 @@ async def handle_query_memory(
         # 计数器+1
         plugin.msg_counter.increment_counter(session_id)
 
+        # 支持显式记忆触发：只控制“写入记忆”，不受后续 RAG 间隔注入门控影响。
+        if plugin.config.get("enable_explicit_memory_capture", False):
+            explicit_content = _extract_explicit_memory_content(actual_query)
+            if explicit_content:
+                try:
+                    stored = await store_manual_memory(
+                        plugin=plugin,
+                        event=event,
+                        memory_content=explicit_content,
+                        source="explicit_trigger",
+                    )
+                    if stored:
+                        logger.info("已根据显式“记住”触发写入长期记忆。")
+                except Exception as e:
+                    logger.error(
+                        f"显式“记住”触发写入长期记忆失败: {e}",
+                        exc_info=True,
+                    )
+
         # --- 间隔注入门控 ---
         # “每隔 N 轮对话才触发一次记忆插入”。N<=1 表示每轮都注入（保持原行为）。
         # 该门控仅控制本轮是否执行 RAG 检索与注入，不影响用户消息入库与总结计数。
@@ -512,7 +590,7 @@ async def handle_query_memory(
         except (TypeError, ValueError):
             injection_interval = 1
         if injection_interval > 1:
-            counter = plugin._injection_round_counter
+            counter = _cleanup_injection_round_counter(plugin, session_id)
             current = counter.get(session_id, 0) + 1
             if current < injection_interval:
                 counter[session_id] = current
@@ -540,19 +618,6 @@ async def handle_query_memory(
                 ):
                     logger.warning("Embedding Provider 不可用，无法执行 RAG 搜索")
                     return
-
-                # 支持显式记忆触发：仅在强触发语句下执行，默认关闭以避免误触。
-                if plugin.config.get("enable_explicit_memory_capture", False):
-                    explicit_content = _extract_explicit_memory_content(actual_query)
-                    if explicit_content:
-                        stored = await store_manual_memory(
-                            plugin=plugin,
-                            event=event,
-                            memory_content=explicit_content,
-                            source="explicit_trigger",
-                        )
-                        if stored:
-                            logger.info("已根据显式“记住”触发写入长期记忆。")
 
                 # 使用 AstrBot EmbeddingProvider 的 embed 方法
                 if plugin.embedding_provider:

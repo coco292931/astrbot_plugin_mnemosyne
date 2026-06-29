@@ -286,6 +286,14 @@
         "minimum":1,
         "maximum":50
     },
+    "memory_injection_counter_max_sessions":{
+        "description":"记忆插入计数器最大会话数",
+        "type":"int",
+        "hint":"限制间隔注入计数器最多保留多少个会话，超过后会优先清理已不在当前会话管理器中的旧会话",
+        "default":128,
+        "minimum":1,
+        "maximum":1000
+    },
     "max_prompt_chars_for_embedding":{
         "description":"向量化前最大输入字符数",
         "type":"int",
