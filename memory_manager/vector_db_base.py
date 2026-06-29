@@ -1,5 +1,23 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass
+class VectorInsertResult:
+    """统一的向量数据库写入结果。"""
+
+    insert_count: int = 0
+    primary_keys: list[Any] = field(default_factory=list)
+
+
+@dataclass
+class VectorDeleteResult:
+    """统一的向量数据库删除结果。"""
+
+    delete_count: int | None = None
 
 
 class VectorDatabase(ABC):
@@ -14,6 +32,10 @@ class VectorDatabase(ABC):
         """
         pass
 
+    def is_connected(self) -> bool:
+        """返回当前连接状态。"""
+        return bool(getattr(self, "_is_connected", False))
+
     @abstractmethod
     def create_collection(self, collection_name: str, schema: dict[str, Any]):
         """
@@ -24,7 +46,9 @@ class VectorDatabase(ABC):
         pass
 
     @abstractmethod
-    def insert(self, collection_name: str, data: list[dict[str, Any]]):
+    def insert(
+        self, collection_name: str, data: list[dict[str, Any]]
+    ) -> VectorInsertResult:
         """
         插入数据
         :param collection_name: 集合名称
@@ -34,7 +58,12 @@ class VectorDatabase(ABC):
 
     @abstractmethod
     def query(
-        self, collection_name: str, filters: str, output_fields: list[str]
+        self,
+        collection_name: str,
+        filters: str | None,
+        output_fields: list[str] | None,
+        limit: int | None = None,
+        offset: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         根据条件查询数据
@@ -52,6 +81,8 @@ class VectorDatabase(ABC):
         query_vector: list[float],
         top_k: int,
         filters: str | None = None,
+        search_params: dict[str, Any] | None = None,
+        output_fields: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         执行相似性搜索
@@ -77,23 +108,33 @@ class VectorDatabase(ABC):
         """
         pass
 
+    def has_collection(self, collection_name: str) -> bool:
+        """判断集合是否存在。"""
+        return collection_name in self.list_collections()
+
     @abstractmethod
     def get_loaded_collections(self) -> list[str]:
         """获取已加载到内存的集合"""
         pass
 
     @abstractmethod
-    def get_latest_memory(self, collection_name: str) -> dict[str, Any]:
+    def get_latest_memory(
+        self, collection_name: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
         """获取最新插入的记忆"""
         pass
 
     @abstractmethod
-    def delete(self, collection_name: str, expr: str):
+    def delete(self, collection_name: str, expr: str) -> VectorDeleteResult:
         """根据条件删除记忆"""
         pass
 
+    def flush(self, collection_names: list[str] | None = None) -> bool:
+        """将挂起写入刷新到底层存储；不需要显式刷新的后端可直接返回 True。"""
+        return True
+
     @abstractmethod
-    def drop_collection(self, collection_name: str) -> None:
+    def drop_collection(self, collection_name: str) -> bool:
         """
         删除指定的集合（包括其下的所有数据）
 

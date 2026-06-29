@@ -5,10 +5,7 @@ Mnemosyne - 基于 RAG 的 AstrBot 长期记忆插件主文件
 
 import asyncio
 import time
-from typing import Any, cast
-
-# --- 类型定义和依赖库 ---
-from pymilvus import CollectionSchema
+from typing import TYPE_CHECKING, Any, cast
 
 from astrbot.api import AstrBotConfig, logger  # 使用统一的 logger 和配置类型
 
@@ -34,14 +31,17 @@ from .core.constants import (
 from .core.tools import get_event_platform_id, is_group_chat
 from .memory_manager.context_manager import ConversationContextManager
 from .memory_manager.message_counter import MessageCounter
-from .memory_manager.vector_db.milvus_manager import MilvusManager
+from .memory_manager.vector_db_base import VectorDatabase
+
+if TYPE_CHECKING:
+    from .memory_manager.vector_db.milvus_manager import MilvusManager
 
 
 @register(
     "Mnemosyne",
     "lxfight",
     "一个AstrBot插件，实现基于RAG技术的长期记忆功能。",
-    "2.1.0",
+    "2.1.6",
     "https://github.com/lxfight/astrbot_plugin_mnemosyne",
 )
 class Mnemosyne(Star):
@@ -51,12 +51,14 @@ class Mnemosyne(Star):
         self.context = context
 
         # --- 初始化核心组件状态 ---
-        self.collection_schema: CollectionSchema | None = None
+        self.collection_schema: Any | None = None
+        self.collection_schema_dict: dict[str, Any] | None = None
         self.index_params: dict = {}
         self.search_params: dict = {}
         self.output_fields_for_query: list[str] = []
         self.collection_name: str = DEFAULT_COLLECTION_NAME
-        self.milvus_manager: MilvusManager | None = None
+        self.vector_db: VectorDatabase | None = None
+        self.milvus_manager: "MilvusManager | None" = None
         self.milvus_adapter: Any = None  # MilvusVectorDB 适配器（可选）
         self.msg_counter: MessageCounter | None = None
         self.context_manager: ConversationContextManager | None = None
@@ -74,8 +76,12 @@ class Mnemosyne(Star):
         # 间隔注入计数器：session_id -> 已处理轮次，用于“每隔 N 轮注入一次记忆”
         self._injection_round_counter: dict[str, int] = {}
         self._post_load_tasks_started = False
+        self._summary_check_task: asyncio.Task | None = None
+        self._ensure_vector_db_connection_task: asyncio.Task | None = None
+        self._vector_db_ready = asyncio.Event()
+        # 旧属性名保留给外部代码/旧逻辑兼容。
         self._ensure_milvus_connection_task: asyncio.Task | None = None
-        self._milvus_manager_ready = asyncio.Event()
+        self._milvus_manager_ready = self._vector_db_ready
 
         configured_blacklist = self.config.get("platform_blacklist", [])
         self.platform_blacklist: set[str] = {
@@ -303,8 +309,8 @@ class Mnemosyne(Star):
             self._post_load_tasks_started
             and self._embedding_provider_task
             and not self._embedding_provider_task.done()
-            and self._ensure_milvus_connection_task
-            and not self._ensure_milvus_connection_task.done()
+            and self._ensure_vector_db_connection_task
+            and not self._ensure_vector_db_connection_task.done()
         ):
             return
 
@@ -319,68 +325,73 @@ class Mnemosyne(Star):
             if task:
                 self._embedding_provider_task = task
 
-        # 启动 Milvus 连接后台任务（在 Embedding Provider 加载后执行）
+        # 启动向量数据库连接后台任务（在 Embedding Provider 加载后执行）
         if (
-            not self._ensure_milvus_connection_task
-            or self._ensure_milvus_connection_task.done()
+            not self._ensure_vector_db_connection_task
+            or self._ensure_vector_db_connection_task.done()
         ):
             task = self._create_background_task(
-                self._ensure_milvus_connection_async(),
-                name="mnemosyne.ensure_milvus_connection",
+                self._ensure_vector_db_connection_async(),
+                name="mnemosyne.ensure_vector_db_connection",
             )
             if task:
+                self._ensure_vector_db_connection_task = task
                 self._ensure_milvus_connection_task = task
 
-    async def _ensure_milvus_connection_async(self):
+    async def _ensure_vector_db_connection_async(self):
         """
-        在 Embedding Provider 加载完成后，确保 Milvus 连接已建立
+        在 Embedding Provider 加载完成后，确保向量数据库连接已建立
         这个方法会在插件初始化完成后自动运行，无需用户手动触发
         """
         try:
             # 等待 Embedding Provider 加载完成
             if self._embedding_provider_task:
-                logger.debug("等待 Embedding Provider 加载完成后再连接 Milvus...")
+                logger.debug("等待 Embedding Provider 加载完成后再连接向量数据库...")
                 await self._embedding_provider_task
 
-            # 等待 Milvus Manager 初始化完成（插件初始化可能仍在进行）
-            if not self.milvus_manager:
+            # 等待向量数据库初始化完成（插件初始化可能仍在进行）
+            if not self.vector_db:
                 try:
-                    await asyncio.wait_for(self._milvus_manager_ready.wait(), timeout=10.0)
+                    await asyncio.wait_for(self._vector_db_ready.wait(), timeout=10.0)
                 except asyncio.TimeoutError:
-                    logger.warning("Milvus Manager 未初始化，跳过自动连接")
+                    logger.warning("向量数据库未初始化，跳过自动连接")
                     return
 
-                if not self.milvus_manager:
-                    logger.warning("Milvus Manager 未初始化，跳过自动连接")
+                if not self.vector_db:
+                    logger.warning("向量数据库未初始化，跳过自动连接")
                     return
 
             # 检查是否已连接
-            if self.milvus_manager.is_connected():
-                logger.info("✅ Milvus 已连接")
+            if self.vector_db.is_connected():
+                logger.info("✅ 向量数据库已连接")
                 return
 
             # 尝试建立连接
-            logger.info("正在建立 Milvus 连接...")
-            self.milvus_manager.connect()
+            logger.info("正在建立向量数据库连接...")
+            self.vector_db.connect()
 
-            if self.milvus_manager.is_connected():
-                logger.info("✅ Milvus 连接成功")
+            if self.vector_db.is_connected():
+                logger.info("✅ 向量数据库连接成功")
 
                 # 如果 Embedding Provider 已就绪，确保集合已创建
                 if self._embedding_provider_ready:
                     try:
-                        logger.info("正在初始化 Milvus 集合...")
-                        initialization.setup_milvus_collection_and_index(
+                        logger.info("正在初始化向量数据库集合...")
+                        initialization.setup_vector_db_collection_and_index(
                             self, skip_if_not_ready=False
                         )
-                        logger.info("✅ Milvus 集合初始化完成")
+                        logger.info("✅ 向量数据库集合初始化完成")
                     except Exception as e:
-                        logger.warning(f"Milvus 集合初始化失败: {e}")
+                        logger.warning(f"向量数据库集合初始化失败: {e}")
             else:
-                logger.warning("Milvus 连接建立失败")
+                logger.warning("向量数据库连接建立失败")
 
         except Exception as e:
-            logger.error(f"自动建立 Milvus 连接时出错: {e}", exc_info=True)
+            logger.error(f"自动建立向量数据库连接时出错: {e}", exc_info=True)
+
+    async def _ensure_milvus_connection_async(self):
+        """旧方法名兼容：实际连接当前配置的向量数据库。"""
+        await self._ensure_vector_db_connection_async()
 
     async def _initialize_plugin_async(self):
         """
@@ -449,20 +460,21 @@ class Mnemosyne(Star):
                 self.msg_counter = None
                 self.context_manager = None
 
-            # Milvus 初始化：失败时不阻止插件启动，允许降级运行
+            # 向量数据库初始化：失败时不阻止插件启动，允许降级运行
             try:
                 # 将 plugin_data_dir 转换为字符串（如果是 Path 对象）
                 plugin_data_dir_str = str(plugin_data_dir) if plugin_data_dir else None
-                initialization.initialize_milvus(self, plugin_data_dir_str)
-                self._initialized_components.append("milvus")
-                if self.milvus_manager is not None:
-                    self._milvus_manager_ready.set()    # 标记 Milvus Manager 已就绪
+                initialization.initialize_vector_db(self, plugin_data_dir_str)
+                self._initialized_components.append("vector_db")
+                if self.vector_db is not None:
+                    self._vector_db_ready.set()    # 标记向量数据库已就绪
             except Exception as e:
                 logger.warning(
-                    f"Milvus 初始化失败，插件将以降级模式运行，搜索功能不可用: {e}"
+                    f"向量数据库初始化失败，插件将以降级模式运行，搜索功能不可用: {e}"
                 )
+                self.vector_db = None
                 self.milvus_manager = None
-                self._milvus_manager_ready.clear()
+                self._vector_db_ready.clear()
 
             # 3. 启动后台总结检查任务
             if self.context_manager and self.summary_time_threshold != -1:
@@ -794,8 +806,15 @@ class Mnemosyne(Star):
             except Exception as e:
                 logger.error(f"清理消息计数器时出错: {e}")
 
-        # 清理 Milvus 连接
-        if hasattr(self, "milvus_manager") and self.milvus_manager:
+        # 清理向量数据库连接
+        if hasattr(self, "vector_db") and self.vector_db:
+            try:
+                if self.vector_db.is_connected():
+                    self.vector_db.close()
+                    logger.debug("已断开向量数据库连接")
+            except Exception as e:
+                logger.error(f"清理向量数据库连接时出错: {e}")
+        elif hasattr(self, "milvus_manager") and self.milvus_manager:
             try:
                 if self.milvus_manager.is_connected():
                     self.milvus_manager.disconnect()
@@ -812,24 +831,25 @@ class Mnemosyne(Star):
         """
         logger.info("Mnemosyne 插件正在停止...")
 
-        # 标记 Milvus 不再可用；先 clear，避免新的逻辑误判为 ready
-        self._milvus_manager_ready.clear()
+        # 标记向量数据库不再可用；先 clear，避免新的逻辑误判为 ready
+        self._vector_db_ready.clear()
 
-        # 如果有协程可能正在等待 Milvus 初始化完成，优先取消相关后台任务
+        # 如果有协程可能正在等待向量数据库初始化完成，优先取消相关后台任务
         if (
-            self._ensure_milvus_connection_task
-            and not self._ensure_milvus_connection_task.done()
+            self._ensure_vector_db_connection_task
+            and not self._ensure_vector_db_connection_task.done()
         ):
-            logger.info("正在取消 Milvus 自动连接任务...")
-            self._ensure_milvus_connection_task.cancel()
+            logger.info("正在取消向量数据库自动连接任务...")
+            self._ensure_vector_db_connection_task.cancel()
             try:
-                await asyncio.wait_for(self._ensure_milvus_connection_task, timeout=5.0)
+                await asyncio.wait_for(self._ensure_vector_db_connection_task, timeout=5.0)
             except asyncio.CancelledError:
-                logger.info("Milvus 自动连接任务已成功取消。")
+                logger.info("向量数据库自动连接任务已成功取消。")
             except asyncio.TimeoutError:
-                logger.warning("等待 Milvus 自动连接任务取消超时。")
+                logger.warning("等待向量数据库自动连接任务取消超时。")
             except Exception as e:
-                logger.error(f"等待 Milvus 自动连接任务取消时发生错误: {e}", exc_info=True)
+                logger.error(f"等待向量数据库自动连接任务取消时发生错误: {e}", exc_info=True)
+        self._ensure_vector_db_connection_task = None
         self._ensure_milvus_connection_task = None
 
         # 如果 Embedding Provider 后台初始化任务仍在运行，也一并取消
@@ -874,8 +894,15 @@ class Mnemosyne(Star):
             except Exception as e:
                 logger.error(f"关闭消息计数器时出错: {e}", exc_info=True)
 
-        # 清理 Milvus 连接
-        if self.milvus_manager and self.milvus_manager.is_connected():
+        # 清理向量数据库连接
+        if self.vector_db and self.vector_db.is_connected():
+            try:
+                logger.info("正在断开与向量数据库的连接...")
+                self.vector_db.close()
+                logger.info("向量数据库连接已成功断开。")
+            except Exception as e:
+                logger.error(f"停止插件时与向量数据库交互出错: {e}", exc_info=True)
+        elif self.milvus_manager and self.milvus_manager.is_connected():
             try:
                 logger.info("正在断开与 Milvus 的连接...")
                 self.milvus_manager.disconnect()
@@ -883,11 +910,12 @@ class Mnemosyne(Star):
             except Exception as e:
                 logger.error(f"停止插件时与 Milvus 交互出错: {e}", exc_info=True)
         else:
-            logger.info("Milvus 管理器未初始化或已断开连接，无需断开。")
+            logger.info("向量数据库未初始化或已断开连接，无需断开。")
 
         # 断开后显式置空，保持状态一致
+        self.vector_db = None
         self.milvus_manager = None
-        self._milvus_manager_ready.clear()
+        self._vector_db_ready.clear()
 
         logger.info("Mnemosyne 插件已完全停止，所有资源已释放。")
         return

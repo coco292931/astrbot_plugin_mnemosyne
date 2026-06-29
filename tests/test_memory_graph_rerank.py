@@ -3,6 +3,12 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from pathlib import Path
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_ROOT))
 
 
 def _ensure_dependency_stubs() -> None:
@@ -57,6 +63,12 @@ def _ensure_dependency_stubs() -> None:
         sys.modules["astrbot.api.provider"] = astrbot_api_provider
         sys.modules["astrbot.core"] = astrbot_core
         sys.modules["astrbot.core.log"] = astrbot_core_log
+
+    try:
+        from pymilvus.exceptions import MilvusException as _MilvusException  # noqa: F401
+        return
+    except ImportError:
+        pass
 
     if "pymilvus.exceptions" not in sys.modules:
         pymilvus = types.ModuleType("pymilvus")
