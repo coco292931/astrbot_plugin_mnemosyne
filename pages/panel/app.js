@@ -3,10 +3,14 @@
 
 const bridge = window.AstrBotPluginPage;
 
-function iconMarkup(name, className = '') {
+function createIconElement(name, className = '') {
     const safeName = String(name).replace(/[^a-z0-9-]/gi, '');
     const safeClass = String(className).replace(/[^a-z0-9-_ ]/gi, '');
-    return `<i data-lucide="${safeName}"${safeClass ? ` class="${safeClass}"` : ''} aria-hidden="true"></i>`;
+    const icon = document.createElement('i');
+    icon.dataset.lucide = safeName;
+    icon.setAttribute('aria-hidden', 'true');
+    if (safeClass) icon.className = safeClass;
+    return icon;
 }
 
 function refreshIcons() {
@@ -128,13 +132,17 @@ function updateThemeToggleUI(theme) {
     const toggleBtn = document.getElementById('theme-toggle-btn');
     if (!toggleBtn) return;
     const icon = toggleBtn.querySelector('.theme-icon');
-    if (theme === 'dark') {
-        icon.innerHTML = iconMarkup('sun');
-        toggleBtn.querySelector('span:last-child').textContent = '浅色模式';
+    const isDark = theme === 'dark';
+    if (isDark) {
+        icon.replaceChildren(createIconElement('sun'));
+        toggleBtn.querySelector('span:last-child').textContent = '切换为浅色模式';
+        toggleBtn.title = '切换为浅色模式';
     } else {
-        icon.innerHTML = iconMarkup('moon');
-        toggleBtn.querySelector('span:last-child').textContent = '深色模式';
+        icon.replaceChildren(createIconElement('moon'));
+        toggleBtn.querySelector('span:last-child').textContent = '切换为深色模式';
+        toggleBtn.title = '切换为深色模式';
     }
+    toggleBtn.setAttribute('aria-pressed', String(isDark));
     refreshIcons();
 }
 
@@ -263,7 +271,7 @@ function renderSystemStatus(statusData) {
     if (!statusCard) return;
     const indicator = getStatusIndicator(statusData.overall_status);
     const cardIcon = statusCard.querySelector('.card-icon');
-    if (cardIcon) cardIcon.innerHTML = iconMarkup(indicator.icon);
+    if (cardIcon) cardIcon.replaceChildren(createIconElement(indicator.icon));
     statusCard.querySelector('.status-text').textContent = indicator.text;
     statusCard.querySelector('.status-text').className = `status-text ${indicator.class}`;
     refreshIcons();
@@ -345,10 +353,11 @@ function showDashboardError(message) {
     if (!container) return;
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
-    const icon = document.createElement('span'); icon.innerHTML = iconMarkup('circle-alert'); icon.style.cssText = 'font-size: 3rem; margin-bottom: 1rem;';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert')); icon.style.cssText = 'font-size: 3rem; margin-bottom: 1rem;';
     const p = document.createElement('p'); p.textContent = message;
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
-    btn.onclick = refreshDashboard; btn.innerHTML = `${iconMarkup('refresh-cw')}<span>重试</span>`;
+    const btnLabel = document.createElement('span'); btnLabel.textContent = '重试';
+    btn.onclick = refreshDashboard; btn.append(createIconElement('refresh-cw'), btnLabel);
     errorDiv.appendChild(icon); errorDiv.appendChild(p); errorDiv.appendChild(btn);
     container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
@@ -459,9 +468,9 @@ function createMemoryItem(memory) {
 
     const actionsDiv = document.createElement('div'); actionsDiv.className = 'memory-actions';
     const viewBtn = document.createElement('button'); viewBtn.className = 'btn-icon'; viewBtn.title = '查看详情';
-    viewBtn.innerHTML = iconMarkup('eye'); viewBtn.onclick = () => viewMemoryDetail(memory.memory_id);
+    viewBtn.setAttribute('aria-label', '查看详情'); viewBtn.appendChild(createIconElement('eye')); viewBtn.onclick = () => viewMemoryDetail(memory.memory_id);
     const deleteBtn = document.createElement('button'); deleteBtn.className = 'btn-icon'; deleteBtn.title = '删除';
-    deleteBtn.innerHTML = iconMarkup('trash-2'); deleteBtn.onclick = () => deleteMemory(memory.memory_id);
+    deleteBtn.setAttribute('aria-label', '删除记忆'); deleteBtn.appendChild(createIconElement('trash-2')); deleteBtn.onclick = () => deleteMemory(memory.memory_id);
     actionsDiv.appendChild(viewBtn); actionsDiv.appendChild(deleteBtn);
 
     div.appendChild(checkboxDiv); div.appendChild(contentDiv); div.appendChild(actionsDiv);
@@ -568,7 +577,7 @@ function viewMemoryDetail(memoryId) {
     const modalContent = document.createElement('div'); modalContent.className = 'modal-content';
     const modalHeader = document.createElement('div'); modalHeader.className = 'modal-header';
     const title = document.createElement('h3'); title.textContent = '记忆详情';
-    const closeBtn = document.createElement('button'); closeBtn.className = 'btn-close'; closeBtn.title = '关闭'; closeBtn.innerHTML = iconMarkup('x'); closeBtn.onclick = () => modal.remove();
+    const closeBtn = document.createElement('button'); closeBtn.className = 'btn-close'; closeBtn.title = '关闭'; closeBtn.setAttribute('aria-label', '关闭记忆详情'); closeBtn.appendChild(createIconElement('x')); closeBtn.onclick = () => modal.remove();
     modalHeader.appendChild(title); modalHeader.appendChild(closeBtn);
 
     const modalBody = document.createElement('div'); modalBody.className = 'modal-body';
@@ -654,7 +663,7 @@ function showMemoriesError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
     const p = document.createElement('p');
-    const icon = document.createElement('span'); icon.innerHTML = iconMarkup('circle-alert');
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
@@ -801,7 +810,7 @@ function showSessionsError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
     const p = document.createElement('p');
-    const icon = document.createElement('span'); icon.innerHTML = iconMarkup('circle-alert');
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
@@ -952,7 +961,7 @@ function showStatisticsError(message) {
     wrapper.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
 
     const p = document.createElement('p');
-    const icon = document.createElement('span'); icon.innerHTML = iconMarkup('circle-alert');
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
 
@@ -1052,7 +1061,7 @@ function showConfigError(message) {
     wrapper.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
 
     const p = document.createElement('p');
-    const icon = document.createElement('span'); icon.innerHTML = iconMarkup('circle-alert');
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
 
