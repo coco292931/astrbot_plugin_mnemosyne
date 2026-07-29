@@ -35,11 +35,15 @@ Embedding Provider 的向量维度决定集合结构。更换 Embedding 模型�
 | `num_pairs` | 触发自动总结的对话轮数。 | `5` |
 | `top_k` | 检索时返回的记忆数量。 | `3` |
 | `contexts_memory_len` | 注入上下文的长期记忆数量。 | `3` |
-| `memory_injection_method` | 记忆注入方式，可放入用户提示或系统提示。 | `user_prompt` |
+| `memory_injection_method` | `user_prompt` 注入用户提示；`system_prompt` 注入 LLM 系统提示；`insert_system_prompt` 新增独立系统消息。 | `user_prompt` |
 | `memory_injection_position` | 注入位置，可选前置或后置。 | `prepend` |
+| `summary_fallback_provider_id` | 主总结模型失败或返回空内容时重试的备用模型。 | 空 |
+| `summary_speaker_mapping_prompt` | 约束 `user`、`assistant` 和第一人称归属，支持会话与说话人变量。 | 内置通用映射 |
 | `score_threshold` | 相似度阈值，低于阈值的记忆会被过滤。 | `0.0` |
 
 如果记忆过多干扰回复，可以降低 `top_k`、提高 `score_threshold` 或减少 `contexts_memory_len`。
+
+`memory_injection_position` 同时控制 `user_prompt` 和 `system_prompt` 的前后位置。`insert_system_prompt` 会创建独立系统消息；部分模型会因此重新计算提示词缓存，缓存成本敏感时优先使用前两种方式。
 
 ## 过滤能力
 
