@@ -442,11 +442,6 @@ class MemoryService:
         output_fields = ["session_id", "content", "create_time", "personality_id"]
         if backend == "milvus":
             output_fields.append("memory_id")
-            try:
-                numeric_id = int(memory_id)
-                filters = f"memory_id == {numeric_id}"
-            except ValueError:
-                filters = f'memory_id == "{memory_id}"'
         try:
             original = vector_db.get_by_id(
                 collection_name=collection_name,
@@ -501,6 +496,12 @@ class MemoryService:
         original_embedding = await provider.get_embedding(original_content)
         if not original_embedding:
             raise RuntimeError("无法生成回滚所需的原记忆 embedding")
+
+        try:
+            numeric_id = int(memory_id)
+            filters = f"memory_id == {numeric_id}"
+        except ValueError:
+            filters = f'memory_id == "{memory_id}"'
 
         delete_result = vector_db.delete(collection_name, filters)
         vector_db.flush([collection_name])

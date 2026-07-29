@@ -27,6 +27,7 @@ from .core.security_utils import (
 )
 
 PLUGIN_NAME = "astrbot_plugin_mnemosyne"
+MEMORY_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.:-]+$")
 
 
 class MnemosyneWebApi:
@@ -181,7 +182,7 @@ class MnemosyneWebApi:
                 return jsonify(self._error("memory_ids 参数无效"))
 
             for mid in memory_ids:
-                if not isinstance(mid, str) or not re.match(r"^[a-zA-Z0-9_-]+$", mid):
+                if not isinstance(mid, str) or not MEMORY_ID_PATTERN.fullmatch(mid):
                     return jsonify(self._error(f"memory_id 格式无效: {mid}"))
 
             deleted_count = 0
@@ -201,7 +202,7 @@ class MnemosyneWebApi:
             mid = str(memory_id).strip()
             if not mid:
                 return jsonify(self._error("memory_id 不能为空"))
-            if not re.match(r"^[a-zA-Z0-9_-]+$", mid):
+            if not MEMORY_ID_PATTERN.fullmatch(mid):
                 return jsonify(self._error("memory_id 格式无效"))
             success = await self.memory_service.delete_memory(mid)
             if not success:
@@ -214,7 +215,7 @@ class MnemosyneWebApi:
     async def update_single_memory(self, memory_id: str) -> Any:
         try:
             mid = str(memory_id or "").strip()
-            if not mid or not re.fullmatch(r"[a-zA-Z0-9_-]+", mid):
+            if not mid or not MEMORY_ID_PATTERN.fullmatch(mid):
                 return jsonify(self._error("memory_id 格式无效"))
 
             body = await request.get_json(silent=True) or {}

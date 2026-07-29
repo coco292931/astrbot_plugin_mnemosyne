@@ -30,6 +30,7 @@ const AppState = {
     memoryField: null,
     inspectedMemoryId: null,
     inspectorOriginalContent: '',
+    inspectorTrigger: null,
 };
 
 // ==================== Bridge API 封装 ====================
@@ -205,8 +206,26 @@ function setupMemoryInspector() {
     saveButton?.addEventListener('click', saveMemoryChanges);
     editor?.addEventListener('input', updateInspectorDraftState);
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && AppState.inspectedMemoryId) {
+        if (!AppState.inspectedMemoryId) return;
+        if (event.key === 'Escape') {
             closeMemoryInspector();
+            return;
+        }
+        if (event.key === 'Tab') {
+            const inspector = document.getElementById('memory-inspector');
+            const focusable = Array.from(inspector?.querySelectorAll(
+                'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'
+            ) || []).filter(element => element.getClientRects().length > 0);
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
         }
     });
 }
@@ -631,20 +650,35 @@ function viewMemoryDetail(memoryId) {
         || AppState.memoriesData?.records?.find(m => m.memory_id === memoryId);
     if (!memory) { showToast('记忆数据未找到', 'error'); return; }
 
-    AppState.inspectedMemoryId = memory.memory_id;
-    AppState.inspectorOriginalContent = memory.content || '';
-    document.getElementById('inspector-memory-id').textContent = memory.memory_id || '--';
-    document.getElementById('inspector-session-id').textContent = memory.session_id || '--';
-    document.getElementById('inspector-persona-id').textContent = memory.persona_id || '--';
-    document.getElementById('inspector-create-time').textContent = formatTime(memory.create_time || memory.timestamp);
-    const editor = document.getElementById('inspector-content');
-    editor.value = AppState.inspectorOriginalContent;
-    document.getElementById('inspector-character-count').textContent = String(editor.value.length);
-    document.getElementById('inspector-save-status').textContent = '编辑内容后将重新生成向量';
-    document.getElementById('memory-inspector-save').disabled = true;
-
     const inspector = document.getElementById('memory-inspector');
     const backdrop = document.getElementById('memory-inspector-backdrop');
+    const editor = document.getElementById('inspector-content');
+    const memoryIdElement = document.getElementById('inspector-memory-id');
+    const sessionIdElement = document.getElementById('inspector-session-id');
+    const personaIdElement = document.getElementById('inspector-persona-id');
+    const createTimeElement = document.getElementById('inspector-create-time');
+    const countElement = document.getElementById('inspector-character-count');
+    const statusElement = document.getElementById('inspector-save-status');
+    const saveButton = document.getElementById('memory-inspector-save');
+    if (!inspector || !backdrop || !editor || !memoryIdElement
+        || !sessionIdElement || !personaIdElement || !createTimeElement
+        || !countElement || !statusElement || !saveButton) {
+        showToast('记忆检查器未正确加载', 'error');
+        return;
+    }
+
+    AppState.inspectorTrigger = document.activeElement;
+    AppState.inspectedMemoryId = memory.memory_id;
+    AppState.inspectorOriginalContent = memory.content || '';
+    memoryIdElement.textContent = memory.memory_id || '--';
+    sessionIdElement.textContent = memory.session_id || '--';
+    personaIdElement.textContent = memory.persona_id || '--';
+    createTimeElement.textContent = formatTime(memory.create_time || memory.timestamp);
+    editor.value = AppState.inspectorOriginalContent;
+    countElement.textContent = String(editor.value.length);
+    statusElement.textContent = '编辑内容后将重新生成向量';
+    saveButton.disabled = true;
+
     inspector.classList.add('open');
     inspector.setAttribute('aria-hidden', 'false');
     backdrop.classList.add('open');
@@ -661,8 +695,11 @@ function closeMemoryInspector() {
     backdrop?.classList.remove('open');
     backdrop?.setAttribute('aria-hidden', 'true');
     document.body.classList.remove('inspector-open');
+    const trigger = AppState.inspectorTrigger;
     AppState.inspectedMemoryId = null;
     AppState.inspectorOriginalContent = '';
+    AppState.inspectorTrigger = null;
+    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
 }
 
 function updateInspectorDraftState() {
