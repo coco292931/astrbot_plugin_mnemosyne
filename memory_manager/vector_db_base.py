@@ -56,6 +56,17 @@ class VectorDatabase(ABC):
         """
         pass
 
+    def update(
+        self,
+        collection_name: str,
+        record_id: str,
+        data: dict[str, Any],
+    ) -> VectorInsertResult:
+        """更新单条记录；不支持原生更新的后端应显式抛出。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support in-place updates"
+        )
+
     @abstractmethod
     def query(
         self,

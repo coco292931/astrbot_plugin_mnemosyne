@@ -229,6 +229,33 @@ class QdrantVectorDB(VectorDatabase):
             logger.error(f"查询集合 '{collection_name}' 失败: {e}", exc_info=True)
             raise
 
+    def update(
+        self,
+        collection_name: str,
+        record_id: str,
+        data: dict[str, Any],
+    ) -> VectorInsertResult:
+        """使用 Qdrant upsert 原子替换并保留 point ID。"""
+        self._ensure_connected()
+        embedding = data.get("embedding")
+        if not embedding:
+            raise ValueError("更新 Qdrant 记录时 embedding 不能为空")
+
+        from qdrant_client.models import PointStruct
+
+        point = PointStruct(
+            id=record_id,
+            vector=embedding,
+            payload={
+                "content": data.get("content", ""),
+                "personality_id": data.get("personality_id", ""),
+                "session_id": data.get("session_id", ""),
+                "create_time": data.get("create_time", int(time.time())),
+            },
+        )
+        self._client.upsert(collection_name=collection_name, points=[point])
+        return VectorInsertResult(insert_count=1, primary_keys=[record_id])
+
     def search(
         self,
         collection_name: str,

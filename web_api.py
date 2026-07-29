@@ -51,6 +51,7 @@ class MnemosyneWebApi:
         register(f"/{PLUGIN_NAME}/memories/statistics", self.get_memory_statistics, ["GET"], "")
         register(f"/{PLUGIN_NAME}/memories/sessions", self.get_session_list, ["GET"], "")
         register(f"/{PLUGIN_NAME}/memories/delete", self.batch_delete_memories, ["POST"], "")
+        register(f"/{PLUGIN_NAME}/memories/<memory_id>/update", self.update_single_memory, ["POST"], "")
         register(f"/{PLUGIN_NAME}/memories/<memory_id>/delete", self.delete_single_memory, ["POST"], "")
         register(f"/{PLUGIN_NAME}/memories/session/<session_id>/delete", self.delete_session_memories, ["POST"], "")
         register(f"/{PLUGIN_NAME}/memories/export", self.export_memories, ["GET"], "")
@@ -209,6 +210,25 @@ class MnemosyneWebApi:
         except Exception as e:
             logger.error(f"删除记忆失败: {e}", exc_info=True)
             return jsonify(self._error(str(e)))
+
+    async def update_single_memory(self, memory_id: str) -> Any:
+        try:
+            mid = str(memory_id or "").strip()
+            if not mid or not re.fullmatch(r"[a-zA-Z0-9_-]+", mid):
+                return jsonify(self._error("memory_id 格式无效"))
+
+            body = await request.get_json(silent=True) or {}
+            content = body.get("content")
+            if not isinstance(content, str):
+                return jsonify(self._error("content 参数无效"))
+
+            record = await self.memory_service.update_memory(mid, content)
+            return jsonify({"updated": True, "record": record})
+        except (ValueError, RuntimeError) as e:
+            return jsonify(self._error(str(e)))
+        except Exception as e:
+            logger.error(f"更新记忆失败: {e}", exc_info=True)
+            return jsonify(self._error("更新记忆时发生内部错误"))
 
     async def delete_session_memories(self, session_id: str) -> Any:
         try:

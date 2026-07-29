@@ -418,6 +418,150 @@ class MemoryService:
             self.logger.error(f"删除记忆失败: {e}", exc_info=True)
             return False
 
+    async def update_memory(self, memory_id: str, content: str) -> dict[str, Any]:
+        """更新记忆内容并重新生成 embedding。"""
+        normalized_content = str(content or "").strip()
+        if not normalized_content:
+            raise ValueError("记忆内容不能为空")
+        if len(normalized_content) > 4096:
+            raise ValueError("记忆内容不能超过 4096 个字符")
+
+        vector_db = self._get_vector_db()
+        if not vector_db or not vector_db.is_connected():
+            raise RuntimeError("向量数据库未连接")
+
+        collection_name = self.plugin.collection_name
+        if not vector_db.has_collection(collection_name):
+            raise RuntimeError("记忆集合不存在")
+
+        provider = getattr(self.plugin, "embedding_provider", None)
+        if not provider:
+            raise RuntimeError("Embedding Provider 未初始化")
+
+        backend = self._vector_db_type()
+        output_fields = ["session_id", "content", "create_time", "personality_id"]
+        if backend == "milvus":
+            output_fields.append("memory_id")
+            try:
+                numeric_id = int(memory_id)
+                filters = f"memory_id == {numeric_id}"
+            except ValueError:
+                filters = f'memory_id == "{memory_id}"'
+            candidates = vector_db.query(
+                collection_name=collection_name,
+                filters=filters,
+                output_fields=output_fields,
+                limit=1,
+            )
+        else:
+            candidates = vector_db.query(
+                collection_name=collection_name,
+                filters=self._all_records_expr(),
+                output_fields=output_fields,
+                limit=10000,
+            )
+            candidates = [
+                item for item in candidates if self._record_id(item) == memory_id
+            ][:1]
+
+        if not candidates:
+            raise ValueError("记忆记录不存在")
+
+        original = candidates[0]
+        original_content = str(original.get("content", ""))
+        create_time = original.get("create_time")
+        if isinstance(create_time, datetime):
+            create_time = create_time.timestamp()
+        elif isinstance(create_time, str):
+            try:
+                create_time = datetime.fromisoformat(create_time).timestamp()
+            except ValueError:
+                create_time = datetime.now().timestamp()
+        elif not isinstance(create_time, (int, float)):
+            create_time = datetime.now().timestamp()
+
+        new_embedding = await provider.get_embedding(normalized_content)
+        if not new_embedding:
+            raise RuntimeError("无法为更新后的记忆生成 embedding")
+
+        updated_payload = {
+            "content": normalized_content,
+            "embedding": new_embedding,
+            "personality_id": original.get("personality_id", ""),
+            "session_id": original.get("session_id", ""),
+            "create_time": int(create_time),
+        }
+
+        if backend != "milvus":
+            result = vector_db.update(collection_name, memory_id, updated_payload)
+            vector_db.flush([collection_name])
+            if result.insert_count != 1:
+                raise RuntimeError("向量数据库未确认更新操作")
+            updated_id = str(result.primary_keys[0]) if result.primary_keys else memory_id
+            return self._updated_memory_response(
+                memory_id, updated_id, updated_payload
+            )
+
+        # Milvus 集合使用 AutoID，无法原地保留主键。删除前同时生成旧向量，
+        # 这样新记录插入失败时仍可恢复原内容。
+        original_embedding = await provider.get_embedding(original_content)
+        if not original_embedding:
+            raise RuntimeError("无法生成回滚所需的原记忆 embedding")
+
+        delete_result = vector_db.delete(collection_name, filters)
+        vector_db.flush([collection_name])
+        if (
+            delete_result.delete_count is not None
+            and delete_result.delete_count < 1
+        ):
+            raise RuntimeError("原记忆删除失败，更新已取消")
+
+        try:
+            insert_result = vector_db.insert(collection_name, [updated_payload])
+            vector_db.flush([collection_name])
+            if insert_result.insert_count != 1:
+                raise RuntimeError("更新后的记忆插入失败")
+        except Exception as update_error:
+            rollback_payload = {
+                **updated_payload,
+                "content": original_content,
+                "embedding": original_embedding,
+            }
+            try:
+                rollback_result = vector_db.insert(collection_name, [rollback_payload])
+                vector_db.flush([collection_name])
+                if rollback_result.insert_count != 1:
+                    raise RuntimeError("回滚插入未成功")
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    "记忆更新失败且原记录无法恢复，请立即检查向量数据库"
+                ) from rollback_error
+            raise RuntimeError("记忆更新失败，原内容已恢复") from update_error
+
+        updated_id = (
+            str(insert_result.primary_keys[0])
+            if insert_result.primary_keys
+            else memory_id
+        )
+        return self._updated_memory_response(memory_id, updated_id, updated_payload)
+
+    @staticmethod
+    def _updated_memory_response(
+        previous_id: str,
+        updated_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "memory_id": updated_id,
+            "previous_memory_id": previous_id,
+            "id_changed": updated_id != previous_id,
+            "content": payload["content"],
+            "session_id": payload.get("session_id", ""),
+            "persona_id": payload.get("personality_id", ""),
+            "create_time": datetime.fromtimestamp(payload["create_time"]).isoformat(),
+            "embedding_regenerated": True,
+        }
+
     async def delete_session_memories(self, session_id: str) -> int:
         """
         删除指定会话的所有记忆

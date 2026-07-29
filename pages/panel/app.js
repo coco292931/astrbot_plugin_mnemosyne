@@ -28,6 +28,8 @@ const AppState = {
     sessionsData: null,
     statisticsData: null,
     memoryField: null,
+    inspectedMemoryId: null,
+    inspectorOriginalContent: '',
 };
 
 // ==================== Bridge API 封装 ====================
@@ -103,6 +105,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupNavigation();
     setupClock();
     setupMemoryField();
+    setupMemoryInspector();
 
     refreshIcons();
 
@@ -185,6 +188,24 @@ function setupMemoryField() {
     if (canvas && window.MnemosyneMemoryField) {
         AppState.memoryField = new window.MnemosyneMemoryField(canvas);
     }
+}
+
+function setupMemoryInspector() {
+    const closeButton = document.getElementById('memory-inspector-close');
+    const cancelButton = document.getElementById('memory-inspector-cancel');
+    const saveButton = document.getElementById('memory-inspector-save');
+    const backdrop = document.getElementById('memory-inspector-backdrop');
+    const editor = document.getElementById('inspector-content');
+    closeButton?.addEventListener('click', closeMemoryInspector);
+    cancelButton?.addEventListener('click', closeMemoryInspector);
+    backdrop?.addEventListener('click', closeMemoryInspector);
+    saveButton?.addEventListener('click', saveMemoryChanges);
+    editor?.addEventListener('input', updateInspectorDraftState);
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && AppState.inspectedMemoryId) {
+            closeMemoryInspector();
+        }
+    });
 }
 
 function loadPage(pageName) {
@@ -564,6 +585,14 @@ function updateBatchActions() {
     if (selectedCountEl) selectedCountEl.textContent = selectedMemoryIds.size;
 }
 
+function clearMemorySelection() {
+    selectedMemoryIds.clear();
+    document.querySelectorAll('.memory-item input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    updateBatchActions();
+}
+
 async function batchDeleteMemories() {
     if (selectedMemoryIds.size === 0) { showToast('请先选择要删除的记忆', 'warning'); return; }
     if (!confirm(`确定要删除选中的 ${selectedMemoryIds.size} 条记忆吗？此操作不可恢复！`)) return;
@@ -595,48 +624,103 @@ async function deleteMemory(memoryId) {
 }
 
 function viewMemoryDetail(memoryId) {
-    const memory = AppState.memoriesData?.records?.find(m => m.memory_id === memoryId);
+    const memory = allMemoriesCache.find(m => m.memory_id === memoryId)
+        || AppState.memoriesData?.records?.find(m => m.memory_id === memoryId);
     if (!memory) { showToast('记忆数据未找到', 'error'); return; }
 
-    const modal = document.createElement('div'); modal.className = 'modal';
-    const modalContent = document.createElement('div'); modalContent.className = 'modal-content';
-    const modalHeader = document.createElement('div'); modalHeader.className = 'modal-header';
-    const title = document.createElement('h3'); title.textContent = '记忆详情';
-    const closeBtn = document.createElement('button'); closeBtn.className = 'btn-close'; closeBtn.title = '关闭'; closeBtn.setAttribute('aria-label', '关闭记忆详情'); closeBtn.appendChild(createIconElement('x')); closeBtn.onclick = () => modal.remove();
-    modalHeader.appendChild(title); modalHeader.appendChild(closeBtn);
+    AppState.inspectedMemoryId = memory.memory_id;
+    AppState.inspectorOriginalContent = memory.content || '';
+    document.getElementById('inspector-memory-id').textContent = memory.memory_id || '--';
+    document.getElementById('inspector-session-id').textContent = memory.session_id || '--';
+    document.getElementById('inspector-persona-id').textContent = memory.persona_id || '--';
+    document.getElementById('inspector-create-time').textContent = formatTime(memory.create_time || memory.timestamp);
+    const editor = document.getElementById('inspector-content');
+    editor.value = AppState.inspectorOriginalContent;
+    document.getElementById('inspector-character-count').textContent = String(editor.value.length);
+    document.getElementById('inspector-save-status').textContent = '编辑内容后将重新生成向量';
+    document.getElementById('memory-inspector-save').disabled = true;
 
-    const modalBody = document.createElement('div'); modalBody.className = 'modal-body';
-    const addDetail = (label, value) => {
-        const itemDiv = document.createElement('div'); itemDiv.className = 'detail-item';
-        const labelEl = document.createElement('label'); labelEl.textContent = label + ':';
-        const valueEl = document.createElement('span'); valueEl.textContent = value;
-        itemDiv.appendChild(labelEl); itemDiv.appendChild(valueEl);
-        modalBody.appendChild(itemDiv);
-    };
+    const inspector = document.getElementById('memory-inspector');
+    const backdrop = document.getElementById('memory-inspector-backdrop');
+    inspector.classList.add('open');
+    inspector.setAttribute('aria-hidden', 'false');
+    backdrop.classList.add('open');
+    backdrop.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('inspector-open');
+    setTimeout(() => editor.focus(), 280);
+}
 
-    addDetail('记忆ID', memory.memory_id);
-    addDetail('会话ID', memory.session_id);
-    addDetail('时间', formatTime(memory.create_time || memory.timestamp));
-    addDetail('类型', getMemoryTypeText(memory.metadata?.memory_type || memory.memory_type || 'long_term'));
-    if (memory.similarity_score != null) addDetail('相似度', memory.similarity_score.toFixed(3));
+function closeMemoryInspector() {
+    const inspector = document.getElementById('memory-inspector');
+    const backdrop = document.getElementById('memory-inspector-backdrop');
+    inspector?.classList.remove('open');
+    inspector?.setAttribute('aria-hidden', 'true');
+    backdrop?.classList.remove('open');
+    backdrop?.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('inspector-open');
+    AppState.inspectedMemoryId = null;
+    AppState.inspectorOriginalContent = '';
+}
 
-    const contentItem = document.createElement('div'); contentItem.className = 'detail-item';
-    const contentLabel = document.createElement('label'); contentLabel.textContent = '内容:';
-    const contentValue = document.createElement('div');
-    contentValue.style.cssText = 'white-space: pre-wrap; margin-top: 0.5rem; padding: 1rem; background: var(--bg-secondary); border-radius: 4px;';
-    contentValue.textContent = memory.content;
-    contentItem.appendChild(contentLabel); contentItem.appendChild(contentValue);
-    modalBody.appendChild(contentItem);
+function updateInspectorDraftState() {
+    const editor = document.getElementById('inspector-content');
+    const saveButton = document.getElementById('memory-inspector-save');
+    const status = document.getElementById('inspector-save-status');
+    const content = editor.value;
+    const normalized = content.trim();
+    const changed = normalized !== AppState.inspectorOriginalContent.trim();
+    document.getElementById('inspector-character-count').textContent = String(content.length);
+    saveButton.disabled = !normalized || !changed;
+    status.textContent = !normalized
+        ? '记忆内容不能为空'
+        : changed
+            ? '保存时将重新生成向量'
+            : '当前内容没有变化';
+}
 
-    const modalFooter = document.createElement('div'); modalFooter.className = 'modal-footer';
-    const closeFooterBtn = document.createElement('button'); closeFooterBtn.className = 'btn btn-secondary'; closeFooterBtn.textContent = '关闭'; closeFooterBtn.onclick = () => modal.remove();
-    modalFooter.appendChild(closeFooterBtn);
+async function saveMemoryChanges() {
+    const memoryId = AppState.inspectedMemoryId;
+    const editor = document.getElementById('inspector-content');
+    const saveButton = document.getElementById('memory-inspector-save');
+    const status = document.getElementById('inspector-save-status');
+    const content = editor.value.trim();
+    if (!memoryId || !content || saveButton.disabled) return;
 
-    modalContent.appendChild(modalHeader); modalContent.appendChild(modalBody); modalContent.appendChild(modalFooter);
-    modal.appendChild(modalContent);
-    document.body.appendChild(modal);
-    refreshIcons();
-    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+    saveButton.disabled = true;
+    status.textContent = '正在重建向量';
+    showLoading(true);
+    try {
+        const result = await apiPost(`memories/${memoryId}/update`, { content });
+        if (!result || result.status === 'error' || !result.record) {
+            throw new Error(result?.message || '更新接口未返回记录');
+        }
+
+        const updated = result.record;
+        const updateRecord = record => {
+            if (record.memory_id !== memoryId) return;
+            record.memory_id = updated.memory_id;
+            record.content = updated.content;
+            record.create_time = updated.create_time || record.create_time;
+            record.persona_id = updated.persona_id ?? record.persona_id;
+        };
+        allMemoriesCache.forEach(updateRecord);
+        AppState.memoriesData?.records?.forEach(updateRecord);
+
+        if (updated.id_changed && selectedMemoryIds.delete(memoryId)) {
+            selectedMemoryIds.add(updated.memory_id);
+        }
+        const groupBy = currentSearchParams.group_by || '';
+        if (groupBy) renderGroupedMemories(allMemoriesCache, groupBy);
+        else renderMemoriesList(allMemoriesCache);
+        closeMemoryInspector();
+        showToast(updated.id_changed ? '记忆已更新，数据库已分配新 ID' : '记忆与向量已更新', 'success');
+    } catch (error) {
+        status.textContent = error.message;
+        saveButton.disabled = false;
+        showToast('更新失败：' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
 }
 
 async function exportMemories(format = 'json') {
@@ -1128,6 +1212,7 @@ window.vectorSearchMemories = vectorSearchMemories;
 window.clearFilters = clearFilters;
 window.toggleMemorySelection = toggleMemorySelection;
 window.toggleSelectAll = toggleSelectAll;
+window.clearMemorySelection = clearMemorySelection;
 window.batchDeleteMemories = batchDeleteMemories;
 window.deleteMemory = deleteMemory;
 window.viewMemoryDetail = viewMemoryDetail;

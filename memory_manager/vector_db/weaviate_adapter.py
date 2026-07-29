@@ -249,6 +249,32 @@ class WeaviateVectorDB(VectorDatabase):
             logger.error(f"查询集合 '{collection_name}' 失败: {e}", exc_info=True)
             raise
 
+    def update(
+        self,
+        collection_name: str,
+        record_id: str,
+        data: dict[str, Any],
+    ) -> VectorInsertResult:
+        """使用 Weaviate 对象更新接口保留 UUID。"""
+        self._ensure_connected()
+        embedding = data.get("embedding")
+        if not embedding:
+            raise ValueError("更新 Weaviate 记录时 embedding 不能为空")
+
+        class_name = collection_name.capitalize()
+        self._client.data_object.update(
+            uuid=record_id,
+            class_name=class_name,
+            data_object={
+                "content": data.get("content", ""),
+                "personality_id": data.get("personality_id", ""),
+                "session_id": data.get("session_id", ""),
+                "create_time": data.get("create_time", int(time.time())),
+            },
+            vector=embedding,
+        )
+        return VectorInsertResult(insert_count=1, primary_keys=[record_id])
+
     def search(
         self,
         collection_name: str,
