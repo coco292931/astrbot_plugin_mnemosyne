@@ -275,6 +275,26 @@ class WeaviateVectorDB(VectorDatabase):
         )
         return VectorInsertResult(insert_count=1, primary_keys=[record_id])
 
+    def get_by_id(
+        self,
+        collection_name: str,
+        record_id: str,
+        output_fields: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """通过 Weaviate UUID 直接读取记录。"""
+        self._ensure_connected()
+        result = self._client.data_object.get_by_id(
+            uuid=record_id,
+            class_name=collection_name.capitalize(),
+            with_vector=False,
+        )
+        if not result:
+            return None
+        return {
+            "id": result.get("id", record_id),
+            **(result.get("properties") or {}),
+        }
+
     def search(
         self,
         collection_name: str,

@@ -296,6 +296,29 @@ class ChromaVectorDB(VectorDatabase):
         )
         return VectorInsertResult(insert_count=1, primary_keys=[record_id])
 
+    def get_by_id(
+        self,
+        collection_name: str,
+        record_id: str,
+        output_fields: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """通过 Chroma 文档 ID 直接读取记录。"""
+        self._ensure_connected()
+        collection = self._client.get_collection(name=collection_name)
+        result = collection.get(
+            ids=[record_id],
+            include=["metadatas", "documents"],
+        )
+        if not result.get("ids"):
+            return None
+        record = {
+            "id": result["ids"][0],
+            "content": (result.get("documents") or [""])[0],
+        }
+        metadata = (result.get("metadatas") or [{}])[0] or {}
+        record.update(metadata)
+        return record
+
     def search(
         self,
         collection_name: str,

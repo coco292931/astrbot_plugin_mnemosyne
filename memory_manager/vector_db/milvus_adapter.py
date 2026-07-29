@@ -202,6 +202,26 @@ class MilvusVectorDB(VectorDatabase):
             logger.error(f"查询集合 '{collection_name}' 失败: {e}")
             raise
 
+    def get_by_id(
+        self,
+        collection_name: str,
+        record_id: str,
+        output_fields: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """通过 Milvus 主键直接读取记录。"""
+        try:
+            normalized_id = int(record_id)
+            filters = f"memory_id == {normalized_id}"
+        except ValueError:
+            filters = f'memory_id == "{record_id}"'
+        records = self.query(
+            collection_name=collection_name,
+            filters=filters,
+            output_fields=output_fields,
+            limit=1,
+        )
+        return records[0] if records else None
+
     def search(
         self,
         collection_name: str,

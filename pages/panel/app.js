@@ -187,6 +187,9 @@ function setupMemoryField() {
     const canvas = document.getElementById('memory-field-canvas');
     if (canvas && window.MnemosyneMemoryField) {
         AppState.memoryField = new window.MnemosyneMemoryField(canvas);
+        window.addEventListener('beforeunload', () => {
+            AppState.memoryField?.destroy();
+        }, { once: true });
     }
 }
 

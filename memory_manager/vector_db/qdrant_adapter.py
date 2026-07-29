@@ -256,6 +256,24 @@ class QdrantVectorDB(VectorDatabase):
         self._client.upsert(collection_name=collection_name, points=[point])
         return VectorInsertResult(insert_count=1, primary_keys=[record_id])
 
+    def get_by_id(
+        self,
+        collection_name: str,
+        record_id: str,
+        output_fields: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """通过 Qdrant point ID 直接读取记录。"""
+        self._ensure_connected()
+        points = self._client.retrieve(
+            collection_name=collection_name,
+            ids=[record_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not points:
+            return None
+        return {"id": points[0].id, **(points[0].payload or {})}
+
     def search(
         self,
         collection_name: str,

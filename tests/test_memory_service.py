@@ -113,7 +113,7 @@ class _UpdateVectorDB:
     def has_collection(self, _collection_name):
         return True
 
-    def query(self, **kwargs):
+    def get_by_id(self, **kwargs):
         record = {
             "session_id": "session-1",
             "content": "原始记忆",
@@ -124,7 +124,7 @@ class _UpdateVectorDB:
             record["memory_id"] = 42
         else:
             record["id"] = "native-42"
-        return [record]
+        return record
 
     def update(self, collection_name, record_id, data):
         self.updated = (collection_name, record_id, data)

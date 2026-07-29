@@ -447,27 +447,18 @@ class MemoryService:
                 filters = f"memory_id == {numeric_id}"
             except ValueError:
                 filters = f'memory_id == "{memory_id}"'
-            candidates = vector_db.query(
+        try:
+            original = vector_db.get_by_id(
                 collection_name=collection_name,
-                filters=filters,
+                record_id=memory_id,
                 output_fields=output_fields,
-                limit=1,
             )
-        else:
-            candidates = vector_db.query(
-                collection_name=collection_name,
-                filters=self._all_records_expr(),
-                output_fields=output_fields,
-                limit=10000,
-            )
-            candidates = [
-                item for item in candidates if self._record_id(item) == memory_id
-            ][:1]
+        except NotImplementedError as e:
+            raise RuntimeError("当前向量数据库不支持按 ID 更新记忆") from e
 
-        if not candidates:
+        if not original:
             raise ValueError("记忆记录不存在")
 
-        original = candidates[0]
         original_content = str(original.get("content", ""))
         create_time = original.get("create_time")
         if isinstance(create_time, datetime):
@@ -493,7 +484,10 @@ class MemoryService:
         }
 
         if backend != "milvus":
-            result = vector_db.update(collection_name, memory_id, updated_payload)
+            try:
+                result = vector_db.update(collection_name, memory_id, updated_payload)
+            except NotImplementedError as e:
+                raise RuntimeError("当前向量数据库不支持原地更新记忆") from e
             vector_db.flush([collection_name])
             if result.insert_count != 1:
                 raise RuntimeError("向量数据库未确认更新操作")
