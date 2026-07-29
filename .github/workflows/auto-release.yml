@@ -75,7 +75,7 @@ jobs:
             echo "" >> changelog.md
             
             # 获取提交信息并分类
-            git log "$OLD_VERSION..HEAD" --pretty=format:"%s|||%h|||%an" --no-merges | while IFS='|||' read -r subject hash author; do
+            git log "$OLD_VERSION..HEAD" --pretty=format:"%s%x09%h%x09%an" --no-merges | while IFS=$'\t' read -r subject hash author; do
               # 根据提交信息的前缀进行分类
               if echo "$subject" | grep -qiE "^(feat|feature):"; then
                 echo "- ✨ **Feature**: ${subject#*: } (${hash})" >> changelog.md
