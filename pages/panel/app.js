@@ -26,6 +26,8 @@ const AppState = {
     dashboardData: null,
     memoriesData: null,
     sessionsData: null,
+    statisticsData: null,
+    memoryField: null,
 };
 
 // ==================== Bridge API 封装 ====================
@@ -100,6 +102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 设置导航
     setupNavigation();
     setupClock();
+    setupMemoryField();
 
     refreshIcons();
 
@@ -126,6 +129,11 @@ function toggleTheme() {
     document.documentElement.setAttribute('data-theme', newTheme);
     safeSetItem('theme', newTheme);
     updateThemeToggleUI(newTheme);
+    AppState.memoryField?.refreshPalette();
+    if (AppState.statisticsData) {
+        renderStatisticsChart(AppState.statisticsData);
+        renderDistributionChart(AppState.statisticsData);
+    }
 }
 
 function updateThemeToggleUI(theme) {
@@ -172,17 +180,33 @@ function setupClock() {
     setInterval(updateClock, 30000);
 }
 
+function setupMemoryField() {
+    const canvas = document.getElementById('memory-field-canvas');
+    if (canvas && window.MnemosyneMemoryField) {
+        AppState.memoryField = new window.MnemosyneMemoryField(canvas);
+    }
+}
+
 function loadPage(pageName) {
     console.log(`加载页面: ${pageName}`);
-    AppState.currentPage = pageName;
+    const previousPage = AppState.currentPage;
+    const renderPage = () => {
+        AppState.currentPage = pageName;
+        document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+        const targetPage = document.getElementById(`${pageName}-page`);
+        if (targetPage) targetPage.classList.add('active');
+        document.querySelectorAll('.nav-item').forEach(nav => {
+            nav.classList.toggle('active', nav.dataset.page === pageName);
+        });
+        history.replaceState(null, '', `#${pageName}`);
+    };
 
-    document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
-    const targetPage = document.getElementById(`${pageName}-page`);
-    if (targetPage) targetPage.classList.add('active');
-    document.querySelectorAll('.nav-item').forEach(nav => {
-        nav.classList.toggle('active', nav.dataset.page === pageName);
-    });
-    history.replaceState(null, '', `#${pageName}`);
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (document.startViewTransition && previousPage !== pageName && !reducedMotion) {
+        document.startViewTransition(renderPage);
+    } else {
+        renderPage();
+    }
 
     switch (pageName) {
         case 'dashboard': loadDashboard(); break;
@@ -255,6 +279,7 @@ async function loadDashboard() {
         renderResourceSummary(data.resources);
         renderComponentsHealth(data.status.components);
         renderPerformanceMetrics(data.metrics);
+        AppState.memoryField?.setData(data);
         showToast('仪表板数据加载成功', 'success');
     } catch (error) {
         console.error('加载仪表板失败:', error);
@@ -872,14 +897,14 @@ function renderStatisticsChart(data) {
     }
     if (labels.length === 0) { labels = ['暂无数据']; counts = [0]; }
 
-    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#2563eb';
+    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#6f9dab';
     const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#0f172a';
     const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--border-color').trim() || 'rgba(0, 0, 0, 0.05)';
 
     const ctx = canvas.getContext('2d');
     statisticsChart = new Chart(ctx, {
         type: 'line',
-        data: { labels, datasets: [{ label: '每日新增记忆', data: counts, borderColor: primaryColor, backgroundColor: 'transparent', tension: 0.4, fill: false, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: primaryColor, pointBorderColor: '#fff', pointBorderWidth: 2 }] },
+        data: { labels, datasets: [{ label: '每日新增记忆', data: counts, borderColor: primaryColor, backgroundColor: 'rgba(111, 157, 171, 0.12)', borderWidth: 2, tension: 0.38, fill: true, pointRadius: 0, pointHoverRadius: 6, pointBackgroundColor: primaryColor, pointBorderColor: '#fff', pointBorderWidth: 2 }] },
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { display: true, position: 'top', labels: { color: textColor, font: { size: 14 } } }, tooltip: { mode: 'index', intersect: false, backgroundColor: 'rgba(0, 0, 0, 0.8)', titleFont: { size: 14 }, bodyFont: { size: 13 }, padding: 12 } },
@@ -935,13 +960,20 @@ function renderDistributionChart(data) {
         });
     } else { labels = ['暂无数据']; counts = [0]; }
 
-    const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#0f172a';
-    const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--border-color').trim() || 'rgba(0, 0, 0, 0.05)';
+    const styles = getComputedStyle(document.documentElement);
+    const textColor = styles.getPropertyValue('--text-primary').trim() || '#243237';
+    const gridColor = styles.getPropertyValue('--border-color').trim() || 'rgba(62, 91, 91, 0.14)';
+    const palette = [
+        styles.getPropertyValue('--primary-color').trim() || '#6f9dab',
+        styles.getPropertyValue('--coral').trim() || '#d99b91',
+        styles.getPropertyValue('--mint').trim() || '#cee1c8',
+        styles.getPropertyValue('--cyan').trim() || '#b8d8d4',
+    ];
 
     const ctx = canvas.getContext('2d');
     distributionChart = new Chart(ctx, {
         type: 'bar',
-        data: { labels, datasets: [{ label: '记忆数量', data: counts, backgroundColor: ['rgba(37, 99, 235, 0.8)', 'rgba(249, 115, 22, 0.8)', 'rgba(16, 185, 129, 0.8)', 'rgba(239, 68, 68, 0.8)', 'rgba(245, 158, 11, 0.8)', 'rgba(6, 182, 212, 0.8)', 'rgba(236, 72, 153, 0.8)', 'rgba(20, 184, 166, 0.8)', 'rgba(251, 146, 60, 0.8)', 'rgba(59, 130, 246, 0.8)'], borderColor: ['rgb(37, 99, 235)', 'rgb(249, 115, 22)', 'rgb(16, 185, 129)', 'rgb(239, 68, 68)', 'rgb(245, 158, 11)', 'rgb(6, 182, 212)', 'rgb(236, 72, 153)', 'rgb(20, 184, 166)', 'rgb(251, 146, 60)', 'rgb(59, 130, 246)'], borderWidth: 2 }] },
+        data: { labels, datasets: [{ label: '记忆数量', data: counts, backgroundColor: counts.map((_, index) => palette[index % palette.length]), borderColor: 'transparent', borderWidth: 0, borderRadius: 5, borderSkipped: false }] },
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(0, 0, 0, 0.8)', titleFont: { size: 14 }, bodyFont: { size: 13 }, padding: 12 } },

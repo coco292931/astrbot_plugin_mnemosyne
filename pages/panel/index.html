@@ -64,6 +64,24 @@
                         </div>
                     </div>
 
+                    <section class="memory-field-stage" aria-labelledby="memory-field-title">
+                        <div class="memory-field-heading">
+                            <p class="eyebrow">LIVE RELATION FIELD / 01</p>
+                            <h2 id="memory-field-title">记忆拓扑场</h2>
+                            <p id="memory-field-summary" class="memory-field-summary">正在建立系统关系</p>
+                        </div>
+                        <div class="memory-field-legend" aria-label="节点状态图例">
+                            <span><span class="legend-swatch legend-swatch-core"></span>档案核心</span>
+                            <span><span class="legend-swatch legend-swatch-live"></span>运行节点</span>
+                            <span><span class="legend-swatch legend-swatch-warn"></span>注意节点</span>
+                        </div>
+                        <canvas id="memory-field-canvas" aria-label="系统记忆、会话和运行组件之间的实时关系图"></canvas>
+                        <div class="memory-field-readout">
+                            <span>RELATIONS / ACTIVE</span>
+                            <strong id="memory-field-count">--</strong>
+                        </div>
+                    </section>
+
                     <div class="status-manifest">
                         <article class="status-card status-card-primary" id="overall-status">
                             <div class="manifest-label"><span>01</span><span>STATUS</span></div>
@@ -186,6 +204,7 @@
     <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="./demo-bridge.js"></script>
+    <script src="./memory-field.js"></script>
     <script type="module" src="./app.js"></script>
 </body>
 </html>
