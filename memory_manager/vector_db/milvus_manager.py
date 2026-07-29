@@ -568,6 +568,66 @@ class MilvusManager:
             logger.error(f"创建集合 '{collection_name}' 时发生意外错误: {e}")
             return None
 
+    def ensure_varchar_field_max_length(
+        self,
+        collection_name: str,
+        field_name: str,
+        minimum_length: int,
+    ) -> bool:
+        """Increase a VARCHAR field limit in place without rebuilding user data."""
+        try:
+            collection = self.get_collection(collection_name)
+            if not collection:
+                return False
+
+            field = next(
+                (item for item in collection.schema.fields if item.name == field_name),
+                None,
+            )
+            if field is None or field.dtype != DataType.VARCHAR:
+                logger.error(
+                    f"集合 '{collection_name}' 缺少 VARCHAR 字段 '{field_name}'。"
+                )
+                return False
+
+            current_length = field.params.get("max_length")
+            if isinstance(current_length, int) and current_length >= minimum_length:
+                return True
+
+            if self._is_lite:
+                logger.warning(
+                    "Milvus Lite 不支持在线扩容 VARCHAR 字段。请改用新的集合名，"
+                    "或将旧集合导出后迁移到新集合。"
+                )
+                return False
+
+            handler = connections._fetch_handler(self.alias)
+            alter_field = getattr(handler, "alter_collection_field_properties", None)
+            if not callable(alter_field):
+                logger.error(
+                    "当前 PyMilvus 不支持在线扩容 VARCHAR 字段，请升级到 2.6.0 或更高版本。"
+                )
+                return False
+
+            context = connections._generate_call_context(self.alias)
+            alter_field(
+                collection_name,
+                field_name=field_name,
+                field_params={"max_length": minimum_length},
+                context=context,
+            )
+            logger.info(
+                f"已将集合 '{collection_name}' 字段 '{field_name}' 的 max_length "
+                f"从 {current_length} 扩容到 {minimum_length}。"
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"扩容集合 '{collection_name}' 字段 '{field_name}' 失败: {e}",
+                exc_info=True,
+            )
+            return False
+
     def drop_collection(
         self, collection_name: str, timeout: float | None = None
     ) -> bool:

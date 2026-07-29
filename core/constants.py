@@ -15,6 +15,7 @@ DEFAULT_OUTPUT_FIELDS = [
 ]  # 默认查询返回字段
 # 查询记忆条数的上限
 MAX_TOTAL_FETCH_RECORDS = 10000
+SESSION_ID_MAX_LENGTH = 500
 
 # --- 对话上下文相关常量 ---
 DEFAULT_MAX_TURNS = 10  # 短期记忆最大对话轮数（用于总结）

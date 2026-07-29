@@ -3,9 +3,10 @@
 测试多数据库类型支持和工厂模式
 """
 
-import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from pathlib import Path
+
+import pytest
 
 
 class TestVectorDatabaseFactory:
@@ -190,6 +191,98 @@ class TestMilvusDbNameFix:
         # 验证 token 在连接信息中
         assert manager._token == "test_token_123"
         assert manager._connection_info.get("token") == "test_token_123"
+
+
+class TestMilvusSessionIdSchemaMigration:
+    def test_existing_session_id_field_is_expanded_in_place(self):
+        pytest.importorskip("pymilvus")
+        from memory_manager.vector_db.milvus_manager import MilvusManager
+        from pymilvus import DataType
+
+        manager = MilvusManager(
+            host="localhost",
+            port=19530,
+            plugin_data_dir="./test_data",
+        )
+        manager._is_lite = False
+        old_field = SimpleNamespace(
+            name="session_id",
+            dtype=DataType.VARCHAR,
+            params={"max_length": 72},
+        )
+        collection = MagicMock()
+        collection.schema.fields = [old_field]
+        manager.get_collection = MagicMock(return_value=collection)
+
+        handler = MagicMock()
+        with (
+            patch(
+                "memory_manager.vector_db.milvus_manager.connections._fetch_handler",
+                return_value=handler,
+            ),
+            patch(
+                "memory_manager.vector_db.milvus_manager.connections._generate_call_context",
+                return_value="call-context",
+            ),
+        ):
+            assert manager.ensure_varchar_field_max_length(
+                "memory",
+                "session_id",
+                500,
+            )
+
+        handler.alter_collection_field_properties.assert_called_once_with(
+            "memory",
+            field_name="session_id",
+            field_params={"max_length": 500},
+            context="call-context",
+        )
+
+    def test_old_milvus_lite_schema_is_not_rebuilt_automatically(self):
+        pytest.importorskip("pymilvus")
+        from memory_manager.vector_db.milvus_manager import MilvusManager
+        from pymilvus import DataType
+
+        manager = MilvusManager(
+            plugin_data_dir="./test_data",
+        )
+        manager._is_lite = True
+        old_field = SimpleNamespace(
+            name="session_id",
+            dtype=DataType.VARCHAR,
+            params={"max_length": 72},
+        )
+        collection = MagicMock()
+        collection.schema.fields = [old_field]
+        manager.get_collection = MagicMock(return_value=collection)
+
+        with patch(
+            "memory_manager.vector_db.milvus_manager.connections._fetch_handler"
+        ) as fetch_handler:
+            assert not manager.ensure_varchar_field_max_length(
+                "memory",
+                "session_id",
+                500,
+            )
+
+        fetch_handler.assert_not_called()
+
+    def test_new_collection_schema_accepts_long_session_ids(self):
+        from astrbot_plugin_mnemosyne.core import initialization
+        from astrbot_plugin_mnemosyne.core.constants import SESSION_ID_MAX_LENGTH
+
+        plugin = SimpleNamespace(
+            config={"embedding_dim": 3},
+            embedding_provider=None,
+        )
+        initialization.initialize_config_and_schema(plugin)
+
+        session_field = next(
+            field
+            for field in plugin.collection_schema.fields
+            if field.name == "session_id"
+        )
+        assert session_field.params["max_length"] == SESSION_ID_MAX_LENGTH == 500
 
 
 if __name__ == "__main__":

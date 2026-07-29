@@ -11,7 +11,7 @@
 ---
 
 [![License](https://img.shields.io/badge/license-Custom-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v2.0.0-green.svg)](https://github.com/lxfight/astrbot_plugin_mnemosyne)
+[![Version](https://img.shields.io/badge/version-v2.1.7-green.svg)](https://github.com/lxfight/astrbot_plugin_mnemosyne)
 [![QQ Group](https://img.shields.io/badge/QQ群-953245617-blue?style=flat-square&logo=tencent-qq)](https://qm.qq.com/cgi-bin/qm/qr?k=WdyqoP-AOEXqGAN08lOFfVSguF2EmBeO&jump_from=webapi&authKey=tPyfv90TVYSGVhbAhsAZCcSBotJuTTLf03wnn7/lQZPUkWfoQ/J8e9nkAipkOzwh)
 
 </div>
@@ -143,13 +143,23 @@
 </tr>
 <tr>
 <td><code>memory_injection_method</code></td>
-<td>记忆注入方式</td>
+<td>记忆注入方式；独立系统消息可能降低提示词缓存命中率</td>
 <td>user_prompt</td>
 </tr>
 <tr>
 <td><code>memory_injection_position</code></td>
 <td>记忆注入位置（prepend/append）</td>
 <td>prepend</td>
+</tr>
+<tr>
+<td><code>summary_fallback_provider_id</code></td>
+<td>主总结模型失败或返回空内容时使用的备用模型</td>
+<td>空</td>
+</tr>
+<tr>
+<td><code>summary_speaker_mapping_prompt</code></td>
+<td>约束总结中 user、assistant 与第一人称的映射</td>
+<td>内置通用映射</td>
 </tr>
 <tr>
 <td><code>use_personality_filtering</code></td>

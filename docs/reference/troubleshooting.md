@@ -39,6 +39,14 @@ nc -vz localhost 19530
 
 如果使用 Milvus Lite，确认 `milvus_lite_path` 指向可写路径。
 
+如果日志包含 `No module named 'pkg_resources'`，说明安装了依赖旧 setuptools 行为的 Milvus Lite。不要降级 AstrBot 的 setuptools；请升级可选依赖：
+
+```bash
+uv pip install --upgrade 'pymilvus[milvus_lite]>=2.6.0,<3.0.0'
+```
+
+新建 Milvus 集合的 `session_id` 字段长度为 500。对于旧的标准 Milvus 集合，插件会在启动时尝试从 72 在线扩容到 500；若服务器不支持，请升级 PyMilvus 与 Milvus 后重载插件。Milvus Lite 目前不支持在线修改字段，需改用新的集合名，或先导出旧集合再迁移到新集合。插件不会自动删除或重建已有集合。
+
 ## 切换数据库后旧记忆消失
 
 不同数据库后端之间不会自动共享数据。切换数据库后，需要重新初始化并重新积累记忆，或自行编写迁移脚本导出旧记录再写入新后端。
