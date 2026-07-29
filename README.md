@@ -11,7 +11,7 @@
 ---
 
 [![License](https://img.shields.io/badge/license-Custom-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-v2.1.7-green.svg)](https://github.com/lxfight/astrbot_plugin_mnemosyne)
+[![Version](https://img.shields.io/badge/version-v2.2.0-green.svg)](https://github.com/lxfight/astrbot_plugin_mnemosyne)
 [![QQ Group](https://img.shields.io/badge/QQ群-953245617-blue?style=flat-square&logo=tencent-qq)](https://qm.qq.com/cgi-bin/qm/qr?k=WdyqoP-AOEXqGAN08lOFfVSguF2EmBeO&jump_from=webapi&authKey=tPyfv90TVYSGVhbAhsAZCcSBotJuTTLf03wnn7/lQZPUkWfoQ/J8e9nkAipkOzwh)
 
 </div>
@@ -41,7 +41,9 @@
 ### 管理功能
 
 <ul>
-<li><strong>Web 管理面板</strong><br/>可视化管理记忆数据，支持查询、统计</li>
+<li><strong>莫奈风格管理面板</strong><br/>浅色光学玻璃视觉系统，兼顾桌面端与移动端</li>
+<li><strong>实时记忆拓扑</strong><br/>以 Canvas 物理场呈现记忆关系，支持拖拽与动态关联</li>
+<li><strong>记忆检查器</strong><br/>直接查看和编辑记忆，保存时自动重新生成 Embedding</li>
 <li><strong>命令行工具</strong><br/>提供丰富的命令行指令管理记忆</li>
 <li><strong>灵活配置</strong><br/>支持多种记忆注入方式与检索策略</li>
 <li><strong>数据安全</strong><br/>支持 API 密钥认证保护管理端点</li>
@@ -62,7 +64,7 @@
 </tr>
 <tr>
 <td><strong>向量数据库</strong></td>
-<td>基于 Milvus / Milvus Lite 进行向量存储与检索，支持多种索引类型</td>
+<td>支持 Chroma、Milvus / Milvus Lite、Qdrant 与 Weaviate，提供统一的向量存储与检索能力</td>
 </tr>
 <tr>
 <td><strong>Embedding 服务</strong></td>
@@ -78,7 +80,7 @@
 </tr>
 <tr>
 <td><strong>Web 管理面板</strong></td>
-<td>基于 FastAPI 的管理界面，提供记忆查询、统计、监控功能</td>
+<td>基于 FastAPI 的响应式管理界面，提供记忆查询、统计、实时拓扑与内容编辑功能</td>
 </tr>
 </table>
 
