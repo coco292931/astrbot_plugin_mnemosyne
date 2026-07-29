@@ -3,6 +3,22 @@
 
 const bridge = window.AstrBotPluginPage;
 
+function createIconElement(name, className = '') {
+    const safeName = String(name).replace(/[^a-z0-9-]/gi, '');
+    const safeClass = String(className).replace(/[^a-z0-9-_ ]/gi, '');
+    const icon = document.createElement('i');
+    icon.dataset.lucide = safeName;
+    icon.setAttribute('aria-hidden', 'true');
+    if (safeClass) icon.className = safeClass;
+    return icon;
+}
+
+function refreshIcons() {
+    if (window.lucide?.createIcons) {
+        window.lucide.createIcons({ attrs: { 'stroke-width': 1.8 } });
+    }
+}
+
 // ==================== 全局状态 ====================
 const AppState = {
     currentPage: 'dashboard',
@@ -83,6 +99,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 设置导航
     setupNavigation();
+    setupClock();
+
+    refreshIcons();
 
     // 加载初始页面
     loadPage('dashboard');
@@ -112,29 +131,45 @@ function toggleTheme() {
 function updateThemeToggleUI(theme) {
     const toggleBtn = document.getElementById('theme-toggle-btn');
     if (!toggleBtn) return;
-    const icon = toggleBtn.querySelector('i');
-    const text = toggleBtn.querySelector('span');
-    if (theme === 'dark') {
-        icon.className = 'ti ti-sun';
-        text.textContent = '浅色模式';
+    const icon = toggleBtn.querySelector('.theme-icon');
+    const isDark = theme === 'dark';
+    if (isDark) {
+        icon.replaceChildren(createIconElement('sun'));
+        toggleBtn.querySelector('span:last-child').textContent = '切换为浅色模式';
+        toggleBtn.title = '切换为浅色模式';
     } else {
-        icon.className = 'ti ti-moon';
-        text.textContent = '深色模式';
+        icon.replaceChildren(createIconElement('moon'));
+        toggleBtn.querySelector('span:last-child').textContent = '切换为深色模式';
+        toggleBtn.title = '切换为深色模式';
     }
+    toggleBtn.setAttribute('aria-pressed', String(isDark));
+    refreshIcons();
 }
 
 // ==================== 导航 ====================
 
 function setupNavigation() {
-    document.querySelectorAll('.nav-item').forEach(item => {
+    document.querySelectorAll('[data-page]').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
             const page = item.dataset.page;
-            document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
-            item.classList.add('active');
             loadPage(page);
         });
     });
+}
+
+function setupClock() {
+    const clock = document.getElementById('local-clock');
+    if (!clock) return;
+    const updateClock = () => {
+        clock.textContent = new Intl.DateTimeFormat('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        }).format(new Date());
+    };
+    updateClock();
+    setInterval(updateClock, 30000);
 }
 
 function loadPage(pageName) {
@@ -144,6 +179,10 @@ function loadPage(pageName) {
     document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
     const targetPage = document.getElementById(`${pageName}-page`);
     if (targetPage) targetPage.classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(nav => {
+        nav.classList.toggle('active', nav.dataset.page === pageName);
+    });
+    history.replaceState(null, '', `#${pageName}`);
 
     switch (pageName) {
         case 'dashboard': loadDashboard(); break;
@@ -162,7 +201,7 @@ function navigateTo(pageName) {
 
 function showLoading(show) {
     const overlay = document.getElementById('loading-overlay');
-    if (overlay) overlay.style.display = show ? 'flex' : 'none';
+    if (overlay) overlay.style.display = show ? 'grid' : 'none';
     AppState.loading = show;
 }
 
@@ -196,10 +235,10 @@ function formatBytes(bytes) {
 
 function getStatusIndicator(status) {
     const indicators = {
-        'healthy': { iconClass: 'ti-circle-check', text: '健康', class: 'healthy' },
-        'unhealthy': { iconClass: 'ti-circle-x', text: '异常', class: 'unhealthy' },
-        'degraded': { iconClass: 'ti-alert-triangle', text: '降级', class: 'degraded' },
-        'unknown': { iconClass: 'ti-circle-dashed', text: '未知', class: 'unknown' }
+        'healthy': { icon: 'circle-check-big', text: '健康', class: 'healthy' },
+        'unhealthy': { icon: 'circle-x', text: '异常', class: 'unhealthy' },
+        'degraded': { icon: 'triangle-alert', text: '降级', class: 'degraded' },
+        'unknown': { icon: 'circle-dashed', text: '未知', class: 'unknown' }
     };
     return indicators[status] || indicators.unknown;
 }
@@ -231,10 +270,11 @@ function renderSystemStatus(statusData) {
     const statusCard = document.getElementById('overall-status');
     if (!statusCard) return;
     const indicator = getStatusIndicator(statusData.overall_status);
-    const cardIcon = statusCard.querySelector('.card-icon i');
-    if (cardIcon) { cardIcon.className = ''; cardIcon.className = `ti ${indicator.iconClass}`; }
+    const cardIcon = statusCard.querySelector('.card-icon');
+    if (cardIcon) cardIcon.replaceChildren(createIconElement(indicator.icon));
     statusCard.querySelector('.status-text').textContent = indicator.text;
     statusCard.querySelector('.status-text').className = `status-text ${indicator.class}`;
+    refreshIcons();
 }
 
 function renderResourceSummary(resourcesData) {
@@ -313,12 +353,13 @@ function showDashboardError(message) {
     if (!container) return;
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle'; icon.style.cssText = 'font-size: 3rem; margin-bottom: 1rem;';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert')); icon.style.cssText = 'font-size: 3rem; margin-bottom: 1rem;';
     const p = document.createElement('p'); p.textContent = message;
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
-    btn.onclick = refreshDashboard; btn.innerHTML = '<i class="ti ti-refresh"></i> 重试';
+    const btnLabel = document.createElement('span'); btnLabel.textContent = '重试';
+    btn.onclick = refreshDashboard; btn.append(createIconElement('refresh-cw'), btnLabel);
     errorDiv.appendChild(icon); errorDiv.appendChild(p); errorDiv.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(errorDiv);
+    container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
 
 // ==================== 记忆管理页面 ====================
@@ -394,6 +435,7 @@ function renderMemoriesList(memories) {
     container.innerHTML = '';
     memories.forEach(memory => container.appendChild(createMemoryItem(memory)));
     updateBatchActions();
+    refreshIcons();
 }
 
 function createMemoryItem(memory) {
@@ -426,9 +468,9 @@ function createMemoryItem(memory) {
 
     const actionsDiv = document.createElement('div'); actionsDiv.className = 'memory-actions';
     const viewBtn = document.createElement('button'); viewBtn.className = 'btn-icon'; viewBtn.title = '查看详情';
-    viewBtn.innerHTML = '<i class="ti ti-eye"></i>'; viewBtn.onclick = () => viewMemoryDetail(memory.memory_id);
+    viewBtn.setAttribute('aria-label', '查看详情'); viewBtn.appendChild(createIconElement('eye')); viewBtn.onclick = () => viewMemoryDetail(memory.memory_id);
     const deleteBtn = document.createElement('button'); deleteBtn.className = 'btn-icon'; deleteBtn.title = '删除';
-    deleteBtn.innerHTML = '<i class="ti ti-trash"></i>'; deleteBtn.onclick = () => deleteMemory(memory.memory_id);
+    deleteBtn.setAttribute('aria-label', '删除记忆'); deleteBtn.appendChild(createIconElement('trash-2')); deleteBtn.onclick = () => deleteMemory(memory.memory_id);
     actionsDiv.appendChild(viewBtn); actionsDiv.appendChild(deleteBtn);
 
     div.appendChild(checkboxDiv); div.appendChild(contentDiv); div.appendChild(actionsDiv);
@@ -535,7 +577,7 @@ function viewMemoryDetail(memoryId) {
     const modalContent = document.createElement('div'); modalContent.className = 'modal-content';
     const modalHeader = document.createElement('div'); modalHeader.className = 'modal-header';
     const title = document.createElement('h3'); title.textContent = '记忆详情';
-    const closeBtn = document.createElement('button'); closeBtn.className = 'btn-close'; closeBtn.innerHTML = '<i class="ti ti-x"></i>'; closeBtn.onclick = () => modal.remove();
+    const closeBtn = document.createElement('button'); closeBtn.className = 'btn-close'; closeBtn.title = '关闭'; closeBtn.setAttribute('aria-label', '关闭记忆详情'); closeBtn.appendChild(createIconElement('x')); closeBtn.onclick = () => modal.remove();
     modalHeader.appendChild(title); modalHeader.appendChild(closeBtn);
 
     const modalBody = document.createElement('div'); modalBody.className = 'modal-body';
@@ -568,6 +610,7 @@ function viewMemoryDetail(memoryId) {
     modalContent.appendChild(modalHeader); modalContent.appendChild(modalBody); modalContent.appendChild(modalFooter);
     modal.appendChild(modalContent);
     document.body.appendChild(modal);
+    refreshIcons();
     modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 }
 
@@ -620,13 +663,13 @@ function showMemoriesError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
     btn.textContent = '重试'; btn.onclick = () => loadMemories();
     errorDiv.appendChild(p); errorDiv.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(errorDiv);
+    container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
 
 function renderGroupedMemories(memories, groupBy) {
@@ -663,6 +706,7 @@ function renderGroupedMemories(memories, groupBy) {
         groupContainer.appendChild(groupHeader); groupContainer.appendChild(groupContent);
         container.appendChild(groupContainer);
     }
+    refreshIcons();
 }
 
 function applyGrouping() {
@@ -766,13 +810,13 @@ function showSessionsError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
     btn.textContent = '重试'; btn.onclick = loadSessions;
     errorDiv.appendChild(p); errorDiv.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(errorDiv);
+    container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
 
 // ==================== 统计分析页面 ====================
@@ -910,14 +954,14 @@ function renderDistributionChart(data) {
 }
 
 function showStatisticsError(message) {
-    const container = document.getElementById('statistics-content');
+    const container = document.getElementById('top-sessions-list');
     if (!container) return;
 
     const wrapper = document.createElement('div');
     wrapper.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
 
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
 
@@ -926,7 +970,7 @@ function showStatisticsError(message) {
     btn.textContent = '重试'; btn.onclick = () => loadStatistics();
 
     wrapper.appendChild(p); wrapper.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(wrapper);
+    container.innerHTML = ''; container.appendChild(wrapper); refreshIcons();
 }
 
 // ==================== 系统配置页面 ====================
@@ -975,7 +1019,7 @@ function renderConfigForm(config) {
         if (typeof value === 'boolean') {
             const badge = document.createElement('span');
             badge.className = 'config-badge ' + (value ? 'config-badge-true' : 'config-badge-false');
-            badge.textContent = value ? '✓ 开启' : '✗ 关闭';
+            badge.textContent = value ? '启用' : '停用';
             valueEl.appendChild(badge);
         } else if (typeof value === 'number') {
             valueEl.className += ' config-value-number';
@@ -1017,7 +1061,7 @@ function showConfigError(message) {
     wrapper.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
 
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
 
@@ -1026,7 +1070,7 @@ function showConfigError(message) {
     btn.textContent = '重试'; btn.onclick = () => loadConfig();
 
     wrapper.appendChild(p); wrapper.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(wrapper);
+    container.innerHTML = ''; container.appendChild(wrapper); refreshIcons();
 }
 
 // ==================== 全局导出 ====================
