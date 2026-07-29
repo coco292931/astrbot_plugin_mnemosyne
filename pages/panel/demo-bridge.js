@@ -123,6 +123,21 @@
                 const records = memories.slice(0, Number(body.limit || 20));
                 return { records, total_count: records.length };
             }
+            const updateMatch = endpoint.match(/^memories\/([^/]+)\/update$/);
+            if (updateMatch) {
+                const memory = memories.find(item => item.memory_id === updateMatch[1]);
+                if (!memory) return { status: 'error', message: '记忆记录不存在' };
+                memory.content = String(body.content || '').trim();
+                return {
+                    updated: true,
+                    record: {
+                        ...memory,
+                        previous_memory_id: memory.memory_id,
+                        id_changed: false,
+                        embedding_regenerated: true,
+                    },
+                };
+            }
             return { success: true };
         },
         download: async () => true,

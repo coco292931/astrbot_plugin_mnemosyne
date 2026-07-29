@@ -30,11 +30,13 @@
             this.time = 0;
             this.frame = null;
             this.palette = {};
+            this.abortController = new AbortController();
             this.resizeObserver = new ResizeObserver(() => this.resize());
             this.resizeObserver.observe(this.stage);
             this.intersectionObserver = new IntersectionObserver(([entry]) => {
                 this.visible = entry.isIntersecting;
                 if (this.visible) this.start();
+                else this.stop();
             }, { threshold: 0.05 });
             this.intersectionObserver.observe(this.stage);
             this.bindEvents();
@@ -43,6 +45,7 @@
         }
 
         bindEvents() {
+            const eventOptions = { signal: this.abortController.signal };
             this.canvas.addEventListener('pointermove', event => {
                 const rect = this.canvas.getBoundingClientRect();
                 this.pointer.x = event.clientX - rect.left;
@@ -54,26 +57,33 @@
                     this.pointer.draggedNode.vx = 0;
                     this.pointer.draggedNode.vy = 0;
                 }
-            });
+            }, eventOptions);
             this.canvas.addEventListener('pointerleave', () => {
                 this.pointer.active = false;
                 this.pointer.draggedNode = null;
-            });
+            }, eventOptions);
             this.canvas.addEventListener('pointerdown', event => {
                 const rect = this.canvas.getBoundingClientRect();
                 const x = event.clientX - rect.left;
                 const y = event.clientY - rect.top;
                 this.pointer.draggedNode = this.findNearestNode(x, y, 48);
                 if (this.pointer.draggedNode) this.canvas.setPointerCapture(event.pointerId);
-            });
+            }, eventOptions);
             this.canvas.addEventListener('pointerup', event => {
                 this.pointer.draggedNode = null;
                 if (this.canvas.hasPointerCapture(event.pointerId)) this.canvas.releasePointerCapture(event.pointerId);
-            });
+            }, eventOptions);
             prefersReducedMotion.addEventListener('change', () => {
                 if (prefersReducedMotion.matches) this.stop();
                 this.draw();
-            });
+            }, eventOptions);
+        }
+
+        destroy() {
+            this.stop();
+            this.abortController.abort();
+            this.resizeObserver.disconnect();
+            this.intersectionObserver.disconnect();
         }
 
         refreshPalette() {
@@ -304,7 +314,7 @@
             ctx.lineWidth = 1;
             const corner = Math.min(13, size * 0.24);
             ctx.beginPath();
-            ctx.roundRect(-size, -size * 0.72, size * 2, size * 1.44, corner);
+            this.roundedRectPath(ctx, -size, -size * 0.72, size * 2, size * 1.44, corner);
             ctx.fill();
             ctx.stroke();
             ctx.shadowColor = 'transparent';
@@ -317,6 +327,24 @@
             ctx.globalAlpha = 0.72;
             ctx.fillText(node.value, 0, 13);
             ctx.restore();
+        }
+
+        roundedRectPath(ctx, x, y, width, height, radius) {
+            if (typeof ctx.roundRect === 'function') {
+                ctx.roundRect(x, y, width, height, radius);
+                return;
+            }
+            const right = x + width;
+            const bottom = y + height;
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(right - radius, y);
+            ctx.quadraticCurveTo(right, y, right, y + radius);
+            ctx.lineTo(right, bottom - radius);
+            ctx.quadraticCurveTo(right, bottom, right - radius, bottom);
+            ctx.lineTo(x + radius, bottom);
+            ctx.quadraticCurveTo(x, bottom, x, bottom - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
         }
     }
 
