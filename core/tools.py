@@ -427,9 +427,7 @@ def format_context_to_string(
     tool_context_limit = max(0, int(tool_context_limit))
 
     for message in reversed(context_history):
-        if dialog_count >= length and (
-            not include_tool_context or tool_count >= tool_context_limit
-        ):
+        if dialog_count >= length:
             break
 
         role = None

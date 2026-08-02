@@ -159,7 +159,7 @@ def _warn_empty_turn_marker(plugin: "Mnemosyne", attr_name: str) -> None:
         return
     warned_attrs.add(attr_name)
     logger.warning(
-        f"无法为 {attr_name} 构建稳定 turn marker，已保守跳过本轮插件级去重记录。"
+        f"无法为 {attr_name} 构建稳定 turn marker，已保守跳过本轮记忆处理。"
     )
 
 
@@ -304,11 +304,12 @@ def _resolve_response_turn_marker(
     plugin: "Mnemosyne", event: AstrMessageEvent, session_id: str
 ) -> str:
     event_marker = _build_turn_marker(plugin, event, session_id=session_id)
-    if _has_turn_marker(
-        plugin, "_mnemosyne_recorded_user_turns", event_marker
-    ) or _has_turn_marker(plugin, "_mnemosyne_recorded_assistant_turns", event_marker):
+    if event_marker:
         return event_marker
 
+    # 只有当前响应事件无法构建稳定 marker 时才回退到最近的用户轮次。
+    # 如果当前事件有 marker 但未记录过用户消息，必须保留该 marker，让
+    # handle_on_llm_resp 的 user_was_recorded=False 分支继续执行总结检查。
     last_turns = _get_last_user_turn_store(plugin)
     last_marker = last_turns.get(session_id, "")
     if last_marker and _has_turn_marker(
@@ -364,9 +365,14 @@ def _append_tool_context_if_enabled(
 ) -> None:
     if not _summary_should_include_tool_context(plugin):
         return
-    if _get_event_extra(event, TOOL_CONTEXT_RECORDED_EXTRA_KEY, False) or _has_turn_marker(
-        plugin, "_mnemosyne_recorded_tool_context_turns", turn_marker
-    ):
+    tool_context_recorded = _get_event_extra(
+        event, TOOL_CONTEXT_RECORDED_EXTRA_KEY, False
+    ) or _has_turn_marker(
+        plugin,
+        "_mnemosyne_recorded_tool_context_turns",
+        turn_marker,
+    )
+    if tool_context_recorded:
         return
     if not plugin.context_manager:
         return
@@ -431,7 +437,9 @@ def _prune_injection_round_counter(plugin: "Mnemosyne") -> None:
         plugin._injection_round_counter_updated_at = {}
         touched_at = plugin._injection_round_counter_updated_at
 
-    stale_sessions = [session_id for session_id in touched_at if session_id not in counter]
+    stale_sessions = [
+        session_id for session_id in touched_at if session_id not in counter
+    ]
     for session_id in stale_sessions:
         touched_at.pop(session_id, None)
 
@@ -445,6 +453,64 @@ def _prune_injection_round_counter(plugin: "Mnemosyne") -> None:
     for session_id in oldest_sessions:
         counter.pop(session_id, None)
         touched_at.pop(session_id, None)
+
+
+def _resolve_memory_injection_interval(plugin: "Mnemosyne") -> int:
+    raw_interval = 1
+    try:
+        raw_interval = plugin.config.get("memory_injection_interval", 1)
+    except Exception:
+        raw_interval = 1
+
+    try:
+        interval = int(raw_interval)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"memory_injection_interval={raw_interval!r} 无法解析为整数，已回退为 1。"
+        )
+        return 1
+
+    if interval < 1:
+        logger.warning(
+            f"memory_injection_interval={interval} 小于 1，已回退为 1。"
+        )
+        return 1
+    return interval
+
+
+def _should_inject_memory_this_turn(
+    plugin: "Mnemosyne", session_id: str
+) -> bool:
+    """
+    维护每会话注入间隔计数器，返回当前轮是否应执行 RAG 检索与注入。
+    计数器有上限裁剪，避免长期运行时无界增长。
+    """
+    injection_interval = _resolve_memory_injection_interval(plugin)
+    if injection_interval <= 1:
+        return True
+
+    _prune_injection_round_counter(plugin)
+    counter = plugin._injection_round_counter
+    touched_at = plugin._injection_round_counter_updated_at
+    current = counter.get(session_id, 0) + 1
+
+    if current < injection_interval:
+        counter[session_id] = current
+        touched_at[session_id] = time.monotonic()
+        logger.debug(
+            f"间隔注入门控：会话 {session_id} 当前第 {current}/{injection_interval} 轮，"
+            f"本轮跳过记忆检索与注入。"
+        )
+        return False
+
+    # 达到间隔阈值，本轮触发注入并重置计数。
+    counter.pop(session_id, None)
+    touched_at.pop(session_id, None)
+    logger.debug(
+        f"间隔注入门控：会话 {session_id} 已达 {injection_interval} 轮，"
+        "本轮触发记忆注入。"
+    )
+    return True
 
 
 def _collect_participants_from_context(context_history: list[dict] | None) -> list[str]:
@@ -862,7 +928,10 @@ async def handle_query_memory(
         ) or not _mark_turn_once(
             plugin, "_mnemosyne_processed_request_turns", turn_marker
         ):
-            logger.debug(f"会话 {session_id} 当前轮已处理过记忆请求，跳过重复计数与注入。")
+            logger.debug(
+                f"会话 {session_id} 当前轮已处理过记忆请求，"
+                "跳过重复计数与注入。"
+            )
             return
         _set_event_extra(event, REQUEST_PROCESSED_EXTRA_KEY, True)
 
@@ -889,39 +958,38 @@ async def handle_query_memory(
             _mark_turn_once(plugin, "_mnemosyne_recorded_user_turns", turn_marker)
             _remember_last_user_turn(plugin, session_id, turn_marker)
         else:
-            logger.debug(f"会话 {session_id} 当前事件用户消息已记录，跳过重复计数。")
+            logger.debug(
+                f"会话 {session_id} 当前事件用户消息已记录，跳过重复计数。"
+            )
             _set_event_extra(event, USER_RECORDED_EXTRA_KEY, True)
             _mark_turn_once(plugin, "_mnemosyne_recorded_user_turns", turn_marker)
             _remember_last_user_turn(plugin, session_id, turn_marker)
+
+        # 支持显式记忆触发：只要用户明确要求“记住”，就不受间隔注入门控影响。
+        if plugin.config.get("enable_explicit_memory_capture", False):
+            explicit_content = _extract_explicit_memory_content(actual_query)
+            if explicit_content:
+                try:
+                    stored = await store_manual_memory(
+                        plugin=plugin,
+                        event=event,
+                        memory_content=explicit_content,
+                        source="explicit_trigger",
+                    )
+                    if stored:
+                        logger.info("已根据显式“记住”触发写入长期记忆。")
+                except Exception as e:
+                    logger.error(
+                        f"显式记忆写入失败，将继续执行后续记忆流程: {e}",
+                        exc_info=True,
+                    )
 
         # --- 间隔注入门控 ---
         # “每隔 N 轮对话才触发一次记忆插入”。N<=1 表示每轮都注入（保持原行为）。
         # 该门控仅控制本轮是否执行 RAG 检索与注入，不影响用户消息入库与总结计数。
         # 注意：此处不累计召回历史，触发时仅注入“当前这一轮”检索到的记忆。
-        injection_interval = plugin.config.get("memory_injection_interval", 1)
-        try:
-            injection_interval = int(injection_interval)
-        except (TypeError, ValueError):
-            injection_interval = 1
-        if injection_interval > 1:
-            _prune_injection_round_counter(plugin)
-            counter = plugin._injection_round_counter
-            touched_at = plugin._injection_round_counter_updated_at
-            current = counter.get(session_id, 0) + 1
-            if current < injection_interval:
-                counter[session_id] = current
-                touched_at[session_id] = time.monotonic()
-                logger.debug(
-                    f"间隔注入门控：会话 {session_id} 当前第 {current}/{injection_interval} 轮，"
-                    f"本轮跳过记忆检索与注入。"
-                )
-                return
-            # 达到间隔阈值，本轮触发注入并重置计数
-            counter.pop(session_id, None)
-            touched_at.pop(session_id, None)
-            logger.debug(
-                f"间隔注入门控：会话 {session_id} 已达 {injection_interval} 轮，本轮触发记忆注入。"
-            )
+        if not _should_inject_memory_this_turn(plugin, session_id):
+            return
 
         # --- RAG 搜索 ---
         detailed_results = []
@@ -936,19 +1004,6 @@ async def handle_query_memory(
                 ):
                     logger.warning("Embedding Provider 不可用，无法执行 RAG 搜索")
                     return
-
-                # 支持显式记忆触发：仅在强触发语句下执行，默认关闭以避免误触。
-                if plugin.config.get("enable_explicit_memory_capture", False):
-                    explicit_content = _extract_explicit_memory_content(actual_query)
-                    if explicit_content:
-                        stored = await store_manual_memory(
-                            plugin=plugin,
-                            event=event,
-                            memory_content=explicit_content,
-                            source="explicit_trigger",
-                        )
-                        if stored:
-                            logger.info("已根据显式“记住”触发写入长期记忆。")
 
                 # 使用 AstrBot EmbeddingProvider 的 embed 方法
                 if plugin.embedding_provider:
@@ -1025,8 +1080,7 @@ async def handle_on_llm_resp(
 
         tool_call_names = getattr(resp, "tools_call_name", _MISSING)
         if tool_call_names is None:
-            logger.debug("LLM 响应 tools_call_name=None，按工具调用中间态跳过记忆记录。")
-            return
+            tool_call_names = []
         if tool_call_names is not _MISSING and tool_call_names:
             logger.debug(
                 f"检测到工具调用中间响应，不计入记忆总结轮数: {tool_call_names}"
@@ -1054,7 +1108,11 @@ async def handle_on_llm_resp(
 
         assistant_already_recorded = _get_event_extra(
             event, ASSISTANT_RECORDED_EXTRA_KEY, False
-        ) or _has_turn_marker(plugin, "_mnemosyne_recorded_assistant_turns", turn_marker)
+        ) or _has_turn_marker(
+            plugin,
+            "_mnemosyne_recorded_assistant_turns",
+            turn_marker,
+        )
         if assistant_already_recorded:
             logger.debug(f"会话 {session_id} 当前轮助手回复已记录，跳过重复计数。")
             return
@@ -1521,7 +1579,7 @@ def _format_and_inject_memory(
         # 模仿 koko toolbox 的 <system_WARNING> 注入方式：
         # 将记忆作为一个额外的用户内容块追加到 req.extra_user_content_parts，
         # AstrBot 会把它拼接到“当前这条用户消息”之后再发给 LLM。
-        _inject_via_extra_user_parts(req, long_memory)
+        _inject_via_extra_user_parts(req, long_memory, injection_position)
 
     else:
         logger.warning(
@@ -1531,30 +1589,52 @@ def _format_and_inject_memory(
         req.prompt = long_memory + "\n" + current_prompt
 
 
-def _inject_via_extra_user_parts(req: ProviderRequest, long_memory: str):
+def _mark_content_part_as_temp(part: Any) -> None:
+    marker = getattr(part, "mark_as_temp", None)
+    if callable(marker):
+        marker()
+        return
+
+    # 兼容测试桩或字典式 ContentPart；持久化会过滤 _no_save=True。
+    if isinstance(part, dict):
+        part["_no_save"] = True
+        return
+
+    try:
+        setattr(part, "_no_save", True)
+    except Exception:
+        logger.debug("无法为 extra_user_content_parts 标记临时内容", exc_info=True)
+
+
+def _inject_via_extra_user_parts(
+    req: ProviderRequest, long_memory: str, injection_position: str
+):
     """以 koko toolbox 的方式，将记忆作为额外用户内容块注入。
 
-    优先克隆 req.extra_user_content_parts 中已有部件的类型来构造新块（与 koko 一致），
-    退而求其次使用 AstrBot 的 TextPart，最终兜底追加到 req.prompt。
+    使用 TextPart，避免克隆 ImageURLPart/AudioURLPart 时因 text 字段不兼容而失败。
+    注入的记忆必须标记为临时内容，防止持久化进会话历史。
     """
     try:
         parts = getattr(req, "extra_user_content_parts", None)
         if parts is not None:
-            if parts:
-                # 克隆现有部件类型，确保结构一致
-                req.extra_user_content_parts.append(type(parts[0])(text=long_memory))
-            else:
-                from astrbot.core.agent.message import TextPart
+            from astrbot.core.agent.message import TextPart
 
-                req.extra_user_content_parts.append(TextPart(text=long_memory))
+            part = TextPart(text=long_memory)
+            _mark_content_part_as_temp(part)
+            req.extra_user_content_parts.append(part)
             logger.debug("已通过 extra_user_content_parts 注入长期记忆。")
             return
     except Exception as e:
-        logger.warning(f"通过 extra_user_content_parts 注入记忆失败，回退到 prompt: {e}")
+        logger.warning(
+            f"通过 extra_user_content_parts 注入记忆失败，回退到 prompt: {e}"
+        )
 
-    # 兜底：追加到用户 prompt 末尾
+    # 兜底：按配置写回 prompt。
     current_prompt = req.prompt if isinstance(req.prompt, str) else ""
-    req.prompt = current_prompt + "\n" + long_memory
+    if injection_position == "append":
+        req.prompt = current_prompt + "\n" + long_memory
+    else:
+        req.prompt = long_memory + "\n" + current_prompt
 
 
 # 删除补充的长期记忆函数
@@ -1572,6 +1652,10 @@ def clean_contexts(plugin: "Mnemosyne", req: ProviderRequest):
         )
     elif injection_method == "insert_system_prompt":
         req.contexts = remove_system_content(req.contexts, contexts_memory_len)
+    elif injection_method == "extra_user_parts":
+        # extra_user_parts 注入的是临时 ContentPart，不应清理 req.contexts；
+        # 历史里可能存在的 list 型多模态内容也不应由这里重写。
+        pass
     return
 
 

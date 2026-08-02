@@ -78,11 +78,21 @@ class Mnemosyne(Star):
         self._injection_round_counter: dict[str, int] = {}
         self._injection_round_counter_updated_at: dict[str, float] = {}
         # LLM/tool 循环可能复建 event 对象，去重状态放在插件实例上并做有界保留。
-        self._mnemosyne_processed_request_turns: OrderedDict[str, float] = OrderedDict()
-        self._mnemosyne_recorded_user_turns: OrderedDict[str, float] = OrderedDict()
-        self._mnemosyne_recorded_assistant_turns: OrderedDict[str, float] = OrderedDict()
-        self._mnemosyne_recorded_tool_context_turns: OrderedDict[str, float] = OrderedDict()
-        self._mnemosyne_last_user_turn_by_session: OrderedDict[str, str] = OrderedDict()
+        self._mnemosyne_processed_request_turns: OrderedDict[
+            str, float
+        ] = OrderedDict()
+        self._mnemosyne_recorded_user_turns: OrderedDict[
+            str, float
+        ] = OrderedDict()
+        self._mnemosyne_recorded_assistant_turns: OrderedDict[
+            str, float
+        ] = OrderedDict()
+        self._mnemosyne_recorded_tool_context_turns: OrderedDict[
+            str, float
+        ] = OrderedDict()
+        self._mnemosyne_last_user_turn_by_session: OrderedDict[
+            str, str
+        ] = OrderedDict()
         self._post_load_tasks_started = False
         self._summary_check_task: asyncio.Task | None = None
         self._ensure_vector_db_connection_task: asyncio.Task | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import types
@@ -20,6 +21,8 @@ def _ensure_dependency_stubs() -> None:
         astrbot_api_provider = types.ModuleType("astrbot.api.provider")
         astrbot_api_star = types.ModuleType("astrbot.api.star")
         astrbot_core = types.ModuleType("astrbot.core")
+        astrbot_core_agent = types.ModuleType("astrbot.core.agent")
+        astrbot_core_agent_message = types.ModuleType("astrbot.core.agent.message")
         astrbot_core_log = types.ModuleType("astrbot.core.log")
 
         class _Logger:
@@ -54,16 +57,28 @@ def _ensure_dependency_stubs() -> None:
             def get_data_dir():
                 return PLUGIN_ROOT / ".test-data"
 
+        class _TextPart:
+            def __init__(self, text):
+                self.text = text
+                self._no_save = False
+
+            def mark_as_temp(self):
+                self._no_save = True
+                return self
+
         astrbot_api.logger = _Logger()
         astrbot_api_event.AstrMessageEvent = _AstrMessageEvent
         astrbot_api_provider.ProviderRequest = _ProviderRequest
         astrbot_api_provider.LLMResponse = _LLMResponse
         astrbot_api_star.StarTools = _StarTools
+        astrbot_core_agent_message.TextPart = _TextPart
         astrbot_core_log.LogManager = _LogManager
 
         astrbot.api = astrbot_api
         astrbot.core = astrbot_core
         astrbot_api.star = astrbot_api_star
+        astrbot_core.agent = astrbot_core_agent
+        astrbot_core_agent.message = astrbot_core_agent_message
         astrbot_core.log = astrbot_core_log
 
         sys.modules["astrbot"] = astrbot
@@ -72,29 +87,37 @@ def _ensure_dependency_stubs() -> None:
         sys.modules["astrbot.api.provider"] = astrbot_api_provider
         sys.modules["astrbot.api.star"] = astrbot_api_star
         sys.modules["astrbot.core"] = astrbot_core
+        sys.modules["astrbot.core.agent"] = astrbot_core_agent
+        sys.modules["astrbot.core.agent.message"] = astrbot_core_agent_message
         sys.modules["astrbot.core.log"] = astrbot_core_log
 
-    try:
-        from pymilvus.exceptions import MilvusException as _MilvusException  # noqa: F401
-        return
-    except ImportError:
-        pass
+    if "astrbot.core.agent.message" not in sys.modules:
+        astrbot_core = sys.modules.setdefault(
+            "astrbot.core", types.ModuleType("astrbot.core")
+        )
+        astrbot_core_agent = sys.modules.setdefault(
+            "astrbot.core.agent", types.ModuleType("astrbot.core.agent")
+        )
+        astrbot_core_agent_message = types.ModuleType("astrbot.core.agent.message")
 
-    if "pymilvus.exceptions" not in sys.modules:
-        pymilvus = types.ModuleType("pymilvus")
-        pymilvus_exceptions = types.ModuleType("pymilvus.exceptions")
+        class _TextPart:
+            def __init__(self, text):
+                self.text = text
+                self._no_save = False
 
-        class _MilvusException(Exception):
-            pass
+            def mark_as_temp(self):
+                self._no_save = True
+                return self
 
-        pymilvus_exceptions.MilvusException = _MilvusException
-        pymilvus.exceptions = pymilvus_exceptions
-        sys.modules["pymilvus"] = pymilvus
-        sys.modules["pymilvus.exceptions"] = pymilvus_exceptions
+        astrbot_core_agent_message.TextPart = _TextPart
+        astrbot_core.agent = astrbot_core_agent
+        astrbot_core_agent.message = astrbot_core_agent_message
+        sys.modules["astrbot.core.agent.message"] = astrbot_core_agent_message
 
 
 _ensure_dependency_stubs()
 
+import core.memory_operations as memory_operations  # noqa: E402
 from core.memory_operations import (  # noqa: E402
     _build_identity_prefixed_user_text,
     _build_lightweight_graph_metadata,
@@ -195,6 +218,81 @@ class _SingleArgExtraEvent:
         return self.values.get(key)
 
 
+class _ProviderRequestForMemory:
+    def __init__(self, prompt):
+        self.prompt = prompt
+        self.contexts = []
+        self.system_prompt = ""
+        self.image_urls = []
+
+
+class _EventWithExtra:
+    unified_msg_origin = "test:FriendMessage:u1"
+    image_urls = []
+
+    def __init__(self):
+        self._extra = {}
+        self.message_obj = _TurnMessageObj("msg-explicit-1")
+
+    def get_sender_id(self):
+        return "u1"
+
+    def get_message_outline(self):
+        return "记住: Alice likes tea"
+
+    def get_extra(self, key, default=None):
+        return self._extra.get(key, default)
+
+    def set_extra(self, key, value):
+        self._extra[key] = value
+
+
+class _ConnectedVectorDB:
+    def is_connected(self):
+        return True
+
+
+class _Counter:
+    def __init__(self):
+        self.counts = {}
+
+    def increment_counter(self, session_id):
+        self.counts[session_id] = self.counts.get(session_id, 0) + 1
+
+    def get_counter(self, session_id):
+        return self.counts.get(session_id, 0)
+
+
+class _ConversationManager:
+    async def get_curr_conversation_id(self, _umo):
+        return "conv-1"
+
+    async def get_conversation(self, _umo, _conversation_id):
+        return types.SimpleNamespace(persona_id="persona-1")
+
+
+class _Context:
+    conversation_manager = _ConversationManager()
+
+
+class _MemoryPlugin:
+    def __init__(self):
+        self.config = {
+            "enable_explicit_memory_capture": True,
+            "memory_injection_interval": 2,
+            "vector_db_type": "chroma",
+        }
+        self.vector_db = _ConnectedVectorDB()
+        self.embedding_provider = object()
+        self._embedding_provider_ready = True
+        self.context_manager = ConversationContextManager()
+        self.msg_counter = _Counter()
+        self.context = _Context()
+        self.collection_name = "default"
+        self._injection_round_counter = {}
+        self._injection_round_counter_updated_at = {}
+
+
 class _TurnMessageObj:
     def __init__(self, message_id):
         self.message_id = message_id
@@ -212,6 +310,18 @@ class _TurnEvent:
 
     def get_message_outline(self):
         return self.outline
+
+
+_UNSET = object()
+
+
+class _AssistantResponse:
+    role = "assistant"
+
+    def __init__(self, completion_text, tools_call_name=_UNSET):
+        self.completion_text = completion_text
+        if tools_call_name is not _UNSET:
+            self.tools_call_name = tools_call_name
 
 
 class TestMemoryMetaHelpers(unittest.TestCase):
@@ -252,6 +362,169 @@ class TestMemoryMetaHelpers(unittest.TestCase):
         self.assertEqual(plain, "x" * 8)
         self.assertTrue(suffixed_changed)
         self.assertEqual(suffixed, "x" * 8 + "…(truncated)")
+
+
+class TestConfigSchema(unittest.TestCase):
+    def test_memory_injection_schema_has_single_interval_gate(self) -> None:
+        duplicates: list[str] = []
+
+        def object_pairs_hook(pairs):
+            seen = set()
+            for key, _value in pairs:
+                if key in seen:
+                    duplicates.append(key)
+                seen.add(key)
+            return dict(pairs)
+
+        schema_text = (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        schema = json.loads(schema_text, object_pairs_hook=object_pairs_hook)
+
+        self.assertNotIn("memory_injection_interval", duplicates)
+        interval_schema = schema["memory_injection_interval"]
+        self.assertEqual(interval_schema["default"], 1)
+        self.assertEqual(interval_schema["minimum"], 1)
+        self.assertEqual(interval_schema["maximum"], 50)
+        self.assertIn("extra_user_parts", schema["memory_injection_method"]["options"])
+        self.assertFalse(schema["include_tool_context_in_summary"]["default"])
+
+
+class TestHandleQueryMemory(unittest.IsolatedAsyncioTestCase):
+    def test_injection_interval_falls_back_for_invalid_values(self) -> None:
+        for raw_value in ("bad", 0, -3, None):
+            plugin = _Plugin({"memory_injection_interval": raw_value})
+
+            self.assertEqual(
+                memory_operations._resolve_memory_injection_interval(plugin), 1
+            )
+
+    async def test_explicit_memory_capture_runs_before_interval_gate(self) -> None:
+        plugin = _MemoryPlugin()
+        event = _EventWithExtra()
+        req = _ProviderRequestForMemory("记住: Alice likes tea")
+        stored_calls: list[dict] = []
+
+        async def fake_store_manual_memory(**kwargs):
+            stored_calls.append(kwargs)
+            return True
+
+        original_store_manual_memory = memory_operations.store_manual_memory
+        memory_operations.store_manual_memory = fake_store_manual_memory
+        try:
+            await memory_operations.handle_query_memory(plugin, event, req)
+        finally:
+            memory_operations.store_manual_memory = original_store_manual_memory
+
+        self.assertEqual(len(stored_calls), 1)
+        self.assertEqual(stored_calls[0]["memory_content"], "Alice likes tea")
+        self.assertEqual(stored_calls[0]["source"], "explicit_trigger")
+        self.assertEqual(plugin._injection_round_counter[event.unified_msg_origin], 1)
+        self.assertEqual(plugin.msg_counter.get_counter(event.unified_msg_origin), 1)
+        self.assertEqual(req.prompt, "记住: Alice likes tea")
+
+
+class TestHandleLlmResponse(unittest.IsolatedAsyncioTestCase):
+    async def test_response_marker_does_not_fallback_to_previous_turn(self) -> None:
+        plugin = _MemoryPlugin()
+        session_id = "test:FriendMessage:u1"
+        first_event = _TurnEvent("msg-1")
+        first_marker = _build_turn_marker(plugin, first_event, session_id=session_id)
+        plugin.context_manager.add_message(session_id, "user", "first user")
+        plugin.context_manager.add_message(session_id, "assistant", "first assistant")
+        plugin.msg_counter.increment_counter(session_id)
+        plugin.msg_counter.increment_counter(session_id)
+        _mark_turn_once(plugin, "_mnemosyne_recorded_user_turns", first_marker)
+        _mark_turn_once(plugin, "_mnemosyne_recorded_assistant_turns", first_marker)
+        _remember_last_user_turn(plugin, session_id, first_marker)
+
+        summary_calls: list[tuple] = []
+
+        async def fake_check_and_trigger_summary(*args):
+            summary_calls.append(args)
+
+        original_check = memory_operations._check_and_trigger_summary
+        memory_operations._check_and_trigger_summary = fake_check_and_trigger_summary
+        try:
+            await memory_operations.handle_on_llm_resp(
+                plugin, _TurnEvent("msg-2"), _AssistantResponse("second assistant")
+            )
+        finally:
+            memory_operations._check_and_trigger_summary = original_check
+
+        history = plugin.context_manager.get_history(session_id)
+        self.assertEqual([item["role"] for item in history], ["user", "assistant"])
+        self.assertEqual([item["content"] for item in history], ["first user", "first assistant"])
+        self.assertEqual(plugin.msg_counter.get_counter(session_id), 2)
+        self.assertEqual(len(summary_calls), 1)
+
+    async def test_tools_call_name_none_is_treated_as_no_tool_call(self) -> None:
+        plugin = _MemoryPlugin()
+        session_id = "test:FriendMessage:u1"
+        event = _TurnEvent("msg-none-tools")
+        marker = _build_turn_marker(plugin, event, session_id=session_id)
+        plugin.context_manager.add_message(session_id, "user", "current user")
+        plugin.msg_counter.increment_counter(session_id)
+        _mark_turn_once(plugin, "_mnemosyne_recorded_user_turns", marker)
+        _remember_last_user_turn(plugin, session_id, marker)
+
+        summary_calls: list[tuple] = []
+
+        async def fake_check_and_trigger_summary(*args):
+            summary_calls.append(args)
+
+        original_check = memory_operations._check_and_trigger_summary
+        memory_operations._check_and_trigger_summary = fake_check_and_trigger_summary
+        try:
+            await memory_operations.handle_on_llm_resp(
+                plugin,
+                event,
+                _AssistantResponse("assistant should persist", tools_call_name=None),
+            )
+        finally:
+            memory_operations._check_and_trigger_summary = original_check
+
+        history = plugin.context_manager.get_history(session_id)
+        self.assertEqual(history[-1]["role"], "assistant")
+        self.assertEqual(history[-1]["content"], "assistant should persist")
+        self.assertEqual(plugin.msg_counter.get_counter(session_id), 2)
+        self.assertEqual(len(summary_calls), 1)
+
+
+class TestMemoryInjectionFormatting(unittest.TestCase):
+    def test_extra_user_parts_uses_temp_text_part(self) -> None:
+        req = types.SimpleNamespace(
+            prompt="prompt",
+            extra_user_content_parts=[types.SimpleNamespace(image_url="image")],
+        )
+
+        memory_operations._inject_via_extra_user_parts(req, "memory block", "prepend")
+
+        injected = req.extra_user_content_parts[-1]
+        self.assertEqual(injected.text, "memory block")
+        self.assertTrue(injected._no_save)
+
+    def test_extra_user_parts_prompt_fallback_respects_position(self) -> None:
+        prepend_req = types.SimpleNamespace(prompt="prompt")
+        append_req = types.SimpleNamespace(prompt="prompt")
+
+        memory_operations._inject_via_extra_user_parts(prepend_req, "memory", "prepend")
+        memory_operations._inject_via_extra_user_parts(append_req, "memory", "append")
+
+        self.assertEqual(prepend_req.prompt, "memory\nprompt")
+        self.assertEqual(append_req.prompt, "prompt\nmemory")
+
+    def test_clean_contexts_extra_user_parts_leaves_context_history_untouched(self) -> None:
+        plugin = _Plugin({"memory_injection_method": "extra_user_parts"})
+        contexts = [
+            {"role": "user", "content": "old <Mnemosyne>memory</Mnemosyne>"}
+        ]
+        req = types.SimpleNamespace(contexts=contexts, system_prompt="", prompt="")
+
+        memory_operations.clean_contexts(plugin, req)
+
+        self.assertIs(req.contexts, contexts)
+        self.assertEqual(
+            req.contexts[0]["content"], "old <Mnemosyne>memory</Mnemosyne>"
+        )
 
 
 class TestRemoveMnemosyneTags(unittest.TestCase):
@@ -566,6 +839,33 @@ class TestSummaryFormatting(unittest.TestCase):
         self.assertIn("assistant:查好了。", text)
         self.assertIn("tool result id=call_2: 上海雨，24度", text)
         self.assertNotIn("tool result id=call_1: 北京晴，28度", text)
+
+    def test_format_context_does_not_pull_old_tool_context_outside_dialog_window(
+        self,
+    ) -> None:
+        history = [
+            {"role": "tool", "tool_call_id": f"old_{index}", "content": f"D{index}"}
+            for index in range(20)
+        ]
+        history.extend(
+            [
+                {"role": "user", "content": "当前问题"},
+                {"role": "assistant", "content": "当前回答"},
+            ]
+        )
+
+        text = format_context_to_string(
+            history,
+            2,
+            include_tool_context=True,
+            tool_context_limit=12,
+        )
+
+        self.assertIn("user:当前问题", text)
+        self.assertIn("assistant:当前回答", text)
+        self.assertNotIn("tool result", text)
+        self.assertNotIn("D0", text)
+        self.assertNotIn("D19", text)
 
     def test_format_tool_calls_result_supports_model_objects(self) -> None:
         tool_result = _ToolCallsResult(
