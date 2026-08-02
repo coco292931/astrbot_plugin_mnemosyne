@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import tempfile
@@ -920,6 +921,29 @@ class TestMessageCounter(unittest.TestCase):
             finally:
                 counter.close()
 
+    def test_adjust_counter_counts_assistant_text_with_tool_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            counter = MessageCounter(plugin_data_dir=tmp_dir)
+            try:
+                session_id = "test-session"
+                counter.increment_counter(session_id)
+                counter.increment_counter(session_id)
+                history = [
+                    {"role": "user", "content": "查询天气"},
+                    {
+                        "role": "assistant",
+                        "content": "我先帮你查询。",
+                        "tool_calls": [{"id": "call_1", "type": "function"}],
+                    },
+                ]
+
+                self.assertTrue(
+                    counter.adjust_counter_if_necessary(session_id, history)
+                )
+                self.assertEqual(counter.get_counter(session_id), 2)
+            finally:
+                counter.close()
+
 
 class TestConversationContextManager(unittest.TestCase):
     def test_clear_role_messages_removes_temporary_tool_context(self) -> None:
@@ -956,6 +980,86 @@ class TestConversationContextManager(unittest.TestCase):
                 ("assistant", "今天晴"),
             ],
         )
+
+    def test_clear_role_messages_by_metadata_keeps_newer_tool_context(self) -> None:
+        manager = ConversationContextManager()
+        session_id = "test-session"
+        manager.add_message(
+            session_id,
+            "tool",
+            "old tool",
+            metadata={"turn_marker": "old"},
+        )
+        manager.add_message(
+            session_id,
+            "tool",
+            "new tool",
+            metadata={"turn_marker": "new"},
+        )
+
+        removed = manager.clear_role_messages_by_metadata(
+            session_id, "tool", "turn_marker", {"old"}
+        )
+        history = manager.get_history(session_id)
+
+        self.assertEqual(removed, 1)
+        self.assertEqual([item["content"] for item in history], ["new tool"])
+
+
+class TestSummaryToolContextCleanup(unittest.IsolatedAsyncioTestCase):
+    async def test_callback_cleans_captured_tool_context_after_failure_and_cancel(
+        self,
+    ) -> None:
+        plugin = _MemoryPlugin()
+        session_id = "test-session"
+        marker_key = memory_operations.TOOL_CONTEXT_MARKER_METADATA_KEY
+
+        plugin.context_manager.add_message(
+            session_id,
+            "tool",
+            "failed summary tool",
+            metadata={marker_key: "failed"},
+        )
+
+        async def failing_summary() -> None:
+            raise RuntimeError("summary failed")
+
+        failed_task = asyncio.create_task(failing_summary())
+        memory_operations._attach_summary_task_callback(
+            failed_task, plugin, session_id, {"failed"}
+        )
+        with self.assertRaises(RuntimeError):
+            await failed_task
+        await asyncio.sleep(0)
+        self.assertEqual(plugin.context_manager.get_history(session_id), [])
+
+        plugin.context_manager.add_message(
+            session_id,
+            "tool",
+            "cancelled summary tool",
+            metadata={marker_key: "cancelled"},
+        )
+
+        async def pending_summary() -> None:
+            await asyncio.Future()
+
+        cancelled_task = asyncio.create_task(pending_summary())
+        memory_operations._attach_summary_task_callback(
+            cancelled_task, plugin, session_id, {"cancelled"}
+        )
+        plugin.context_manager.add_message(
+            session_id,
+            "tool",
+            "newer tool",
+            metadata={marker_key: "newer"},
+        )
+        cancelled_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await cancelled_task
+        await asyncio.sleep(0)
+
+        history = plugin.context_manager.get_history(session_id)
+        self.assertEqual([item["content"] for item in history], ["newer tool"])
 
 
 class TestLightweightGraphMetadata(unittest.TestCase):

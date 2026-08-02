@@ -49,13 +49,19 @@ def _is_countable_dialog_message(message) -> bool:
         return True
     if role != "assistant":
         return False
-    if message.get("tool_calls"):
-        return False
     content = message.get("content")
     if content is None:
         return False
     if isinstance(content, str):
-        return bool(content.strip())
+        has_content = bool(content.strip())
+    elif isinstance(content, (list, tuple, dict)):
+        has_content = bool(content)
+    else:
+        has_content = True
+    if not has_content:
+        return False
+    # 只有没有正文的 assistant 工具中间态不计入对话消息；带正文的
+    # assistant + tool_calls 仍代表一次可见的 assistant 回复。
     return True
 
 

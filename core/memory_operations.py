@@ -57,6 +57,7 @@ USER_RECORDED_EXTRA_KEY = "_mnemosyne_user_recorded"
 ASSISTANT_RECORDED_EXTRA_KEY = "_mnemosyne_assistant_recorded"
 TOOL_CONTEXT_RECORDED_EXTRA_KEY = "_mnemosyne_tool_context_recorded"
 REQUEST_PROCESSED_EXTRA_KEY = "_mnemosyne_request_processed"
+TOOL_CONTEXT_MARKER_METADATA_KEY = "_mnemosyne_tool_context_turn_marker"
 _MISSING = object()
 _TURN_MARKER_TTL_SECONDS = 10 * 60
 _TURN_MARKER_MAX_ENTRIES = 4096
@@ -387,7 +388,10 @@ def _append_tool_context_if_enabled(
         session_id,
         "tool",
         tool_context,
-        metadata={"speaker_id": "tool"},
+        metadata={
+            "speaker_id": "tool",
+            TOOL_CONTEXT_MARKER_METADATA_KEY: turn_marker,
+        },
     )
     _trim_recorded_tool_context(plugin, session_id)
     _set_event_extra(event, TOOL_CONTEXT_RECORDED_EXTRA_KEY, True)
@@ -397,16 +401,39 @@ def _append_tool_context_if_enabled(
     )
 
 
-def _clear_recorded_tool_context(plugin: "Mnemosyne", session_id: str) -> None:
+def _collect_tool_context_markers(context_history: list[dict] | None) -> set[str]:
+    if not isinstance(context_history, list):
+        return set()
+    markers: set[str] = set()
+    for message in context_history:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        marker = metadata.get(TOOL_CONTEXT_MARKER_METADATA_KEY)
+        if isinstance(marker, str) and marker:
+            markers.add(marker)
+    return markers
+
+
+def _clear_recorded_tool_context(
+    plugin: "Mnemosyne", session_id: str, turn_markers: set[str]
+) -> None:
     context_manager = getattr(plugin, "context_manager", None)
-    if not context_manager:
+    if not context_manager or not turn_markers:
         return
 
-    clear_method = getattr(context_manager, "clear_role_messages", None)
+    clear_method = getattr(context_manager, "clear_role_messages_by_metadata", None)
     if not callable(clear_method):
         return
 
-    removed = clear_method(session_id, "tool")
+    removed = clear_method(
+        session_id,
+        "tool",
+        TOOL_CONTEXT_MARKER_METADATA_KEY,
+        turn_markers,
+    )
     if removed:
         logger.debug(f"已清理会话 {session_id} 的 {removed} 条临时 tool 上下文。")
 
@@ -1225,9 +1252,12 @@ async def _get_persona_id(plugin: "Mnemosyne", event: AstrMessageEvent) -> str |
 
 
 def _attach_summary_task_callback(
-    task: asyncio.Task, plugin: "Mnemosyne", session_id: str
+    task: asyncio.Task,
+    plugin: "Mnemosyne",
+    session_id: str,
+    tool_context_markers: set[str],
 ) -> None:
-    """后台总结任务完成后记录异常并清理临时 tool 上下文。"""
+    """后台总结结束后清理本次任务捕获的临时 tool 上下文。"""
 
     def task_done_callback(t: asyncio.Task):
         try:
@@ -1238,8 +1268,8 @@ def _attach_summary_task_callback(
             logger.error(
                 f"后台总结任务执行失败 (session: {session_id}): {e}", exc_info=True
             )
-        else:
-            _clear_recorded_tool_context(plugin, session_id)
+        finally:
+            _clear_recorded_tool_context(plugin, session_id, tool_context_markers)
 
     task.add_done_callback(task_done_callback)
 
@@ -1275,6 +1305,7 @@ async def _check_and_trigger_summary(
             num_pairs * 2,  # 传递消息条数而不是轮数
             include_tool_context=_summary_should_include_tool_context(plugin),
         )
+        tool_context_markers = _collect_tool_context_markers(context)
 
         task = asyncio.create_task(
             handle_summary_long_memory(
@@ -1285,7 +1316,9 @@ async def _check_and_trigger_summary(
                 context_history=context,
             )
         )
-        _attach_summary_task_callback(task, plugin, session_id)
+        _attach_summary_task_callback(
+            task, plugin, session_id, tool_context_markers
+        )
         logger.info("总结历史对话任务已提交到后台执行。")
         # M24 修复: 添加类型检查
         if plugin.msg_counter:
@@ -2102,6 +2135,9 @@ async def _periodic_summarization_check(plugin: "Mnemosyne"):
                                 plugin
                             ),
                         )
+                        tool_context_markers = _collect_tool_context_markers(
+                            session_context["history"]
+                        )
                         persona_id = await _get_persona_id(
                             plugin, session_context["event"]
                         )
@@ -2114,7 +2150,9 @@ async def _periodic_summarization_check(plugin: "Mnemosyne"):
                                 context_history=session_context["history"],
                             )
                         )
-                        _attach_summary_task_callback(task, plugin, session_id)
+                        _attach_summary_task_callback(
+                            task, plugin, session_id, tool_context_markers
+                        )
                         logger.info("总结历史对话任务已提交到后台执行。")
 
                         # M24 修复: 添加 msg_counter 的类型检查
