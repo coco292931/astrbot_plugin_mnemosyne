@@ -33,6 +33,7 @@ from .constants import (
     DEFAULT_EMBEDDING_DIM,
     DEFAULT_OUTPUT_FIELDS,
     PRIMARY_FIELD_NAME,
+    SESSION_ID_MAX_LENGTH,
     VECTOR_FIELD_NAME,
 )
 from .tools import parse_address
@@ -226,9 +227,9 @@ def initialize_config_and_schema(plugin: "Mnemosyne"):
             _build_field_schema(
                 name="session_id",
                 dtype=DataType.VARCHAR,
-                max_length=72,
+                max_length=SESSION_ID_MAX_LENGTH,
                 description="会话ID",
-            ),  # 增加了长度限制
+            ),
             _build_field_schema(
                 name="content",
                 dtype=DataType.VARCHAR,
@@ -765,6 +766,17 @@ def setup_vector_db_collection_and_index(
     # 对于 Milvus，确保索引存在
     db_type = plugin.config.get("vector_db_type", "chroma").lower()
     if db_type == "milvus":
+        manager = getattr(plugin, "milvus_manager", None)
+        if manager and not manager.ensure_varchar_field_max_length(
+            collection_name,
+            "session_id",
+            SESSION_ID_MAX_LENGTH,
+        ):
+            init_logger.warning(
+                f"集合 '{collection_name}' 的 session_id 字段无法自动扩容到 "
+                f"{SESSION_ID_MAX_LENGTH}。长会话 ID 仍可能写入失败；"
+                "请升级 PyMilvus/Milvus 后重载插件，或按故障排查文档迁移集合。"
+            )
         ensure_milvus_index(plugin, collection_name)
 
     init_logger.info(

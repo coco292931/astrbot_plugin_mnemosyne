@@ -35,7 +35,7 @@ Chroma 是默认后端。最小配置如下：
 Milvus 适合已有 Milvus 服务或数据规模较大的部署。启用前需要安装可选依赖：
 
 ```bash
-uv pip install 'pymilvus[milvus_lite]>=2.5.4,<3.0.0'
+uv pip install 'pymilvus[milvus_lite]>=2.6.0,<3.0.0'
 ```
 
 本地 Milvus Lite 示例：

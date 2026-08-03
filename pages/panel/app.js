@@ -3,6 +3,22 @@
 
 const bridge = window.AstrBotPluginPage;
 
+function createIconElement(name, className = '') {
+    const safeName = String(name).replace(/[^a-z0-9-]/gi, '');
+    const safeClass = String(className).replace(/[^a-z0-9-_ ]/gi, '');
+    const icon = document.createElement('i');
+    icon.dataset.lucide = safeName;
+    icon.setAttribute('aria-hidden', 'true');
+    if (safeClass) icon.className = safeClass;
+    return icon;
+}
+
+function refreshIcons() {
+    if (window.lucide?.createIcons) {
+        window.lucide.createIcons({ attrs: { 'stroke-width': 1.8 } });
+    }
+}
+
 // ==================== 全局状态 ====================
 const AppState = {
     currentPage: 'dashboard',
@@ -10,6 +26,11 @@ const AppState = {
     dashboardData: null,
     memoriesData: null,
     sessionsData: null,
+    statisticsData: null,
+    memoryField: null,
+    inspectedMemoryId: null,
+    inspectorOriginalContent: '',
+    inspectorTrigger: null,
 };
 
 // ==================== Bridge API 封装 ====================
@@ -83,6 +104,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 设置导航
     setupNavigation();
+    setupClock();
+    setupMemoryField();
+    setupMemoryInspector();
+
+    refreshIcons();
 
     // 加载初始页面
     loadPage('dashboard');
@@ -107,43 +133,123 @@ function toggleTheme() {
     document.documentElement.setAttribute('data-theme', newTheme);
     safeSetItem('theme', newTheme);
     updateThemeToggleUI(newTheme);
+    AppState.memoryField?.refreshPalette();
+    if (AppState.statisticsData) {
+        renderStatisticsChart(AppState.statisticsData);
+        renderDistributionChart(AppState.statisticsData);
+    }
 }
 
 function updateThemeToggleUI(theme) {
     const toggleBtn = document.getElementById('theme-toggle-btn');
     if (!toggleBtn) return;
-    const icon = toggleBtn.querySelector('i');
-    const text = toggleBtn.querySelector('span');
-    if (theme === 'dark') {
-        icon.className = 'ti ti-sun';
-        text.textContent = '浅色模式';
+    const icon = toggleBtn.querySelector('.theme-icon');
+    const isDark = theme === 'dark';
+    if (isDark) {
+        icon.replaceChildren(createIconElement('sun'));
+        toggleBtn.querySelector('span:last-child').textContent = '切换为浅色模式';
+        toggleBtn.title = '切换为浅色模式';
     } else {
-        icon.className = 'ti ti-moon';
-        text.textContent = '深色模式';
+        icon.replaceChildren(createIconElement('moon'));
+        toggleBtn.querySelector('span:last-child').textContent = '切换为深色模式';
+        toggleBtn.title = '切换为深色模式';
     }
+    toggleBtn.setAttribute('aria-pressed', String(isDark));
+    refreshIcons();
 }
 
 // ==================== 导航 ====================
 
 function setupNavigation() {
-    document.querySelectorAll('.nav-item').forEach(item => {
+    document.querySelectorAll('[data-page]').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
             const page = item.dataset.page;
-            document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
-            item.classList.add('active');
             loadPage(page);
         });
     });
 }
 
+function setupClock() {
+    const clock = document.getElementById('local-clock');
+    if (!clock) return;
+    const updateClock = () => {
+        clock.textContent = new Intl.DateTimeFormat('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        }).format(new Date());
+    };
+    updateClock();
+    setInterval(updateClock, 30000);
+}
+
+function setupMemoryField() {
+    const canvas = document.getElementById('memory-field-canvas');
+    if (canvas && window.MnemosyneMemoryField) {
+        AppState.memoryField = new window.MnemosyneMemoryField(canvas);
+        window.addEventListener('beforeunload', () => {
+            AppState.memoryField?.destroy();
+        }, { once: true });
+    }
+}
+
+function setupMemoryInspector() {
+    const closeButton = document.getElementById('memory-inspector-close');
+    const cancelButton = document.getElementById('memory-inspector-cancel');
+    const saveButton = document.getElementById('memory-inspector-save');
+    const backdrop = document.getElementById('memory-inspector-backdrop');
+    const editor = document.getElementById('inspector-content');
+    closeButton?.addEventListener('click', closeMemoryInspector);
+    cancelButton?.addEventListener('click', closeMemoryInspector);
+    backdrop?.addEventListener('click', closeMemoryInspector);
+    saveButton?.addEventListener('click', saveMemoryChanges);
+    editor?.addEventListener('input', updateInspectorDraftState);
+    document.addEventListener('keydown', event => {
+        if (!AppState.inspectedMemoryId) return;
+        if (event.key === 'Escape') {
+            closeMemoryInspector();
+            return;
+        }
+        if (event.key === 'Tab') {
+            const inspector = document.getElementById('memory-inspector');
+            const focusable = Array.from(inspector?.querySelectorAll(
+                'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'
+            ) || []).filter(element => element.getClientRects().length > 0);
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        }
+    });
+}
+
 function loadPage(pageName) {
     console.log(`加载页面: ${pageName}`);
-    AppState.currentPage = pageName;
+    const previousPage = AppState.currentPage;
+    const renderPage = () => {
+        AppState.currentPage = pageName;
+        document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+        const targetPage = document.getElementById(`${pageName}-page`);
+        if (targetPage) targetPage.classList.add('active');
+        document.querySelectorAll('.nav-item').forEach(nav => {
+            nav.classList.toggle('active', nav.dataset.page === pageName);
+        });
+        history.replaceState(null, '', `#${pageName}`);
+    };
 
-    document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
-    const targetPage = document.getElementById(`${pageName}-page`);
-    if (targetPage) targetPage.classList.add('active');
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (document.startViewTransition && previousPage !== pageName && !reducedMotion) {
+        document.startViewTransition(renderPage);
+    } else {
+        renderPage();
+    }
 
     switch (pageName) {
         case 'dashboard': loadDashboard(); break;
@@ -162,7 +268,7 @@ function navigateTo(pageName) {
 
 function showLoading(show) {
     const overlay = document.getElementById('loading-overlay');
-    if (overlay) overlay.style.display = show ? 'flex' : 'none';
+    if (overlay) overlay.style.display = show ? 'grid' : 'none';
     AppState.loading = show;
 }
 
@@ -196,10 +302,10 @@ function formatBytes(bytes) {
 
 function getStatusIndicator(status) {
     const indicators = {
-        'healthy': { iconClass: 'ti-circle-check', text: '健康', class: 'healthy' },
-        'unhealthy': { iconClass: 'ti-circle-x', text: '异常', class: 'unhealthy' },
-        'degraded': { iconClass: 'ti-alert-triangle', text: '降级', class: 'degraded' },
-        'unknown': { iconClass: 'ti-circle-dashed', text: '未知', class: 'unknown' }
+        'healthy': { icon: 'circle-check-big', text: '健康', class: 'healthy' },
+        'unhealthy': { icon: 'circle-x', text: '异常', class: 'unhealthy' },
+        'degraded': { icon: 'triangle-alert', text: '降级', class: 'degraded' },
+        'unknown': { icon: 'circle-dashed', text: '未知', class: 'unknown' }
     };
     return indicators[status] || indicators.unknown;
 }
@@ -216,6 +322,7 @@ async function loadDashboard() {
         renderResourceSummary(data.resources);
         renderComponentsHealth(data.status.components);
         renderPerformanceMetrics(data.metrics);
+        AppState.memoryField?.setData(data);
         showToast('仪表板数据加载成功', 'success');
     } catch (error) {
         console.error('加载仪表板失败:', error);
@@ -231,10 +338,11 @@ function renderSystemStatus(statusData) {
     const statusCard = document.getElementById('overall-status');
     if (!statusCard) return;
     const indicator = getStatusIndicator(statusData.overall_status);
-    const cardIcon = statusCard.querySelector('.card-icon i');
-    if (cardIcon) { cardIcon.className = ''; cardIcon.className = `ti ${indicator.iconClass}`; }
+    const cardIcon = statusCard.querySelector('.card-icon');
+    if (cardIcon) cardIcon.replaceChildren(createIconElement(indicator.icon));
     statusCard.querySelector('.status-text').textContent = indicator.text;
     statusCard.querySelector('.status-text').className = `status-text ${indicator.class}`;
+    refreshIcons();
 }
 
 function renderResourceSummary(resourcesData) {
@@ -313,12 +421,13 @@ function showDashboardError(message) {
     if (!container) return;
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle'; icon.style.cssText = 'font-size: 3rem; margin-bottom: 1rem;';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert')); icon.style.cssText = 'font-size: 3rem; margin-bottom: 1rem;';
     const p = document.createElement('p'); p.textContent = message;
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
-    btn.onclick = refreshDashboard; btn.innerHTML = '<i class="ti ti-refresh"></i> 重试';
+    const btnLabel = document.createElement('span'); btnLabel.textContent = '重试';
+    btn.onclick = refreshDashboard; btn.append(createIconElement('refresh-cw'), btnLabel);
     errorDiv.appendChild(icon); errorDiv.appendChild(p); errorDiv.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(errorDiv);
+    container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
 
 // ==================== 记忆管理页面 ====================
@@ -394,6 +503,7 @@ function renderMemoriesList(memories) {
     container.innerHTML = '';
     memories.forEach(memory => container.appendChild(createMemoryItem(memory)));
     updateBatchActions();
+    refreshIcons();
 }
 
 function createMemoryItem(memory) {
@@ -426,9 +536,9 @@ function createMemoryItem(memory) {
 
     const actionsDiv = document.createElement('div'); actionsDiv.className = 'memory-actions';
     const viewBtn = document.createElement('button'); viewBtn.className = 'btn-icon'; viewBtn.title = '查看详情';
-    viewBtn.innerHTML = '<i class="ti ti-eye"></i>'; viewBtn.onclick = () => viewMemoryDetail(memory.memory_id);
+    viewBtn.setAttribute('aria-label', '查看详情'); viewBtn.appendChild(createIconElement('eye')); viewBtn.onclick = () => viewMemoryDetail(memory.memory_id);
     const deleteBtn = document.createElement('button'); deleteBtn.className = 'btn-icon'; deleteBtn.title = '删除';
-    deleteBtn.innerHTML = '<i class="ti ti-trash"></i>'; deleteBtn.onclick = () => deleteMemory(memory.memory_id);
+    deleteBtn.setAttribute('aria-label', '删除记忆'); deleteBtn.appendChild(createIconElement('trash-2')); deleteBtn.onclick = () => deleteMemory(memory.memory_id);
     actionsDiv.appendChild(viewBtn); actionsDiv.appendChild(deleteBtn);
 
     div.appendChild(checkboxDiv); div.appendChild(contentDiv); div.appendChild(actionsDiv);
@@ -497,6 +607,14 @@ function updateBatchActions() {
     if (selectedCountEl) selectedCountEl.textContent = selectedMemoryIds.size;
 }
 
+function clearMemorySelection() {
+    selectedMemoryIds.clear();
+    document.querySelectorAll('.memory-item input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = false;
+    });
+    updateBatchActions();
+}
+
 async function batchDeleteMemories() {
     if (selectedMemoryIds.size === 0) { showToast('请先选择要删除的记忆', 'warning'); return; }
     if (!confirm(`确定要删除选中的 ${selectedMemoryIds.size} 条记忆吗？此操作不可恢复！`)) return;
@@ -528,47 +646,121 @@ async function deleteMemory(memoryId) {
 }
 
 function viewMemoryDetail(memoryId) {
-    const memory = AppState.memoriesData?.records?.find(m => m.memory_id === memoryId);
+    const memory = allMemoriesCache.find(m => m.memory_id === memoryId)
+        || AppState.memoriesData?.records?.find(m => m.memory_id === memoryId);
     if (!memory) { showToast('记忆数据未找到', 'error'); return; }
 
-    const modal = document.createElement('div'); modal.className = 'modal';
-    const modalContent = document.createElement('div'); modalContent.className = 'modal-content';
-    const modalHeader = document.createElement('div'); modalHeader.className = 'modal-header';
-    const title = document.createElement('h3'); title.textContent = '记忆详情';
-    const closeBtn = document.createElement('button'); closeBtn.className = 'btn-close'; closeBtn.innerHTML = '<i class="ti ti-x"></i>'; closeBtn.onclick = () => modal.remove();
-    modalHeader.appendChild(title); modalHeader.appendChild(closeBtn);
+    const inspector = document.getElementById('memory-inspector');
+    const backdrop = document.getElementById('memory-inspector-backdrop');
+    const editor = document.getElementById('inspector-content');
+    const memoryIdElement = document.getElementById('inspector-memory-id');
+    const sessionIdElement = document.getElementById('inspector-session-id');
+    const personaIdElement = document.getElementById('inspector-persona-id');
+    const createTimeElement = document.getElementById('inspector-create-time');
+    const countElement = document.getElementById('inspector-character-count');
+    const statusElement = document.getElementById('inspector-save-status');
+    const saveButton = document.getElementById('memory-inspector-save');
+    if (!inspector || !backdrop || !editor || !memoryIdElement
+        || !sessionIdElement || !personaIdElement || !createTimeElement
+        || !countElement || !statusElement || !saveButton) {
+        showToast('记忆检查器未正确加载', 'error');
+        return;
+    }
 
-    const modalBody = document.createElement('div'); modalBody.className = 'modal-body';
-    const addDetail = (label, value) => {
-        const itemDiv = document.createElement('div'); itemDiv.className = 'detail-item';
-        const labelEl = document.createElement('label'); labelEl.textContent = label + ':';
-        const valueEl = document.createElement('span'); valueEl.textContent = value;
-        itemDiv.appendChild(labelEl); itemDiv.appendChild(valueEl);
-        modalBody.appendChild(itemDiv);
-    };
+    AppState.inspectorTrigger = document.activeElement;
+    AppState.inspectedMemoryId = memory.memory_id;
+    AppState.inspectorOriginalContent = memory.content || '';
+    memoryIdElement.textContent = memory.memory_id || '--';
+    sessionIdElement.textContent = memory.session_id || '--';
+    personaIdElement.textContent = memory.persona_id || '--';
+    createTimeElement.textContent = formatTime(memory.create_time || memory.timestamp);
+    editor.value = AppState.inspectorOriginalContent;
+    countElement.textContent = String(editor.value.length);
+    statusElement.textContent = '编辑内容后将重新生成向量';
+    saveButton.disabled = true;
 
-    addDetail('记忆ID', memory.memory_id);
-    addDetail('会话ID', memory.session_id);
-    addDetail('时间', formatTime(memory.create_time || memory.timestamp));
-    addDetail('类型', getMemoryTypeText(memory.metadata?.memory_type || memory.memory_type || 'long_term'));
-    if (memory.similarity_score != null) addDetail('相似度', memory.similarity_score.toFixed(3));
+    inspector.classList.add('open');
+    inspector.setAttribute('aria-hidden', 'false');
+    backdrop.classList.add('open');
+    backdrop.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('inspector-open');
+    setTimeout(() => editor.focus(), 280);
+}
 
-    const contentItem = document.createElement('div'); contentItem.className = 'detail-item';
-    const contentLabel = document.createElement('label'); contentLabel.textContent = '内容:';
-    const contentValue = document.createElement('div');
-    contentValue.style.cssText = 'white-space: pre-wrap; margin-top: 0.5rem; padding: 1rem; background: var(--bg-secondary); border-radius: 4px;';
-    contentValue.textContent = memory.content;
-    contentItem.appendChild(contentLabel); contentItem.appendChild(contentValue);
-    modalBody.appendChild(contentItem);
+function closeMemoryInspector() {
+    const inspector = document.getElementById('memory-inspector');
+    const backdrop = document.getElementById('memory-inspector-backdrop');
+    inspector?.classList.remove('open');
+    inspector?.setAttribute('aria-hidden', 'true');
+    backdrop?.classList.remove('open');
+    backdrop?.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('inspector-open');
+    const trigger = AppState.inspectorTrigger;
+    AppState.inspectedMemoryId = null;
+    AppState.inspectorOriginalContent = '';
+    AppState.inspectorTrigger = null;
+    if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
+}
 
-    const modalFooter = document.createElement('div'); modalFooter.className = 'modal-footer';
-    const closeFooterBtn = document.createElement('button'); closeFooterBtn.className = 'btn btn-secondary'; closeFooterBtn.textContent = '关闭'; closeFooterBtn.onclick = () => modal.remove();
-    modalFooter.appendChild(closeFooterBtn);
+function updateInspectorDraftState() {
+    const editor = document.getElementById('inspector-content');
+    const saveButton = document.getElementById('memory-inspector-save');
+    const status = document.getElementById('inspector-save-status');
+    const content = editor.value;
+    const normalized = content.trim();
+    const changed = normalized !== AppState.inspectorOriginalContent.trim();
+    document.getElementById('inspector-character-count').textContent = String(content.length);
+    saveButton.disabled = !normalized || !changed;
+    status.textContent = !normalized
+        ? '记忆内容不能为空'
+        : changed
+            ? '保存时将重新生成向量'
+            : '当前内容没有变化';
+}
 
-    modalContent.appendChild(modalHeader); modalContent.appendChild(modalBody); modalContent.appendChild(modalFooter);
-    modal.appendChild(modalContent);
-    document.body.appendChild(modal);
-    modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+async function saveMemoryChanges() {
+    const memoryId = AppState.inspectedMemoryId;
+    const editor = document.getElementById('inspector-content');
+    const saveButton = document.getElementById('memory-inspector-save');
+    const status = document.getElementById('inspector-save-status');
+    const content = editor.value.trim();
+    if (!memoryId || !content || saveButton.disabled) return;
+
+    saveButton.disabled = true;
+    status.textContent = '正在重建向量';
+    showLoading(true);
+    try {
+        const result = await apiPost(`memories/${memoryId}/update`, { content });
+        if (!result || result.status === 'error' || !result.record) {
+            throw new Error(result?.message || '更新接口未返回记录');
+        }
+
+        const updated = result.record;
+        const updateRecord = record => {
+            if (record.memory_id !== memoryId) return;
+            record.memory_id = updated.memory_id;
+            record.content = updated.content;
+            record.create_time = updated.create_time || record.create_time;
+            record.persona_id = updated.persona_id ?? record.persona_id;
+        };
+        allMemoriesCache.forEach(updateRecord);
+        AppState.memoriesData?.records?.forEach(updateRecord);
+
+        if (updated.id_changed && selectedMemoryIds.delete(memoryId)) {
+            selectedMemoryIds.add(updated.memory_id);
+        }
+        const groupBy = currentSearchParams.group_by || '';
+        if (groupBy) renderGroupedMemories(allMemoriesCache, groupBy);
+        else renderMemoriesList(allMemoriesCache);
+        closeMemoryInspector();
+        showToast(updated.id_changed ? '记忆已更新，数据库已分配新 ID' : '记忆与向量已更新', 'success');
+    } catch (error) {
+        status.textContent = error.message;
+        saveButton.disabled = false;
+        showToast('更新失败：' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
 }
 
 async function exportMemories(format = 'json') {
@@ -620,13 +812,13 @@ function showMemoriesError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
     btn.textContent = '重试'; btn.onclick = () => loadMemories();
     errorDiv.appendChild(p); errorDiv.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(errorDiv);
+    container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
 
 function renderGroupedMemories(memories, groupBy) {
@@ -663,6 +855,7 @@ function renderGroupedMemories(memories, groupBy) {
         groupContainer.appendChild(groupHeader); groupContainer.appendChild(groupContent);
         container.appendChild(groupContainer);
     }
+    refreshIcons();
 }
 
 function applyGrouping() {
@@ -766,13 +959,13 @@ function showSessionsError(message) {
     const errorDiv = document.createElement('div');
     errorDiv.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
     const btn = document.createElement('button'); btn.className = 'btn btn-primary'; btn.style.marginTop = '1rem';
     btn.textContent = '重试'; btn.onclick = loadSessions;
     errorDiv.appendChild(p); errorDiv.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(errorDiv);
+    container.innerHTML = ''; container.appendChild(errorDiv); refreshIcons();
 }
 
 // ==================== 统计分析页面 ====================
@@ -828,14 +1021,14 @@ function renderStatisticsChart(data) {
     }
     if (labels.length === 0) { labels = ['暂无数据']; counts = [0]; }
 
-    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#2563eb';
+    const primaryColor = getComputedStyle(document.documentElement).getPropertyValue('--primary-color').trim() || '#6f9dab';
     const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#0f172a';
     const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--border-color').trim() || 'rgba(0, 0, 0, 0.05)';
 
     const ctx = canvas.getContext('2d');
     statisticsChart = new Chart(ctx, {
         type: 'line',
-        data: { labels, datasets: [{ label: '每日新增记忆', data: counts, borderColor: primaryColor, backgroundColor: 'transparent', tension: 0.4, fill: false, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: primaryColor, pointBorderColor: '#fff', pointBorderWidth: 2 }] },
+        data: { labels, datasets: [{ label: '每日新增记忆', data: counts, borderColor: primaryColor, backgroundColor: 'rgba(111, 157, 171, 0.12)', borderWidth: 2, tension: 0.38, fill: true, pointRadius: 0, pointHoverRadius: 6, pointBackgroundColor: primaryColor, pointBorderColor: '#fff', pointBorderWidth: 2 }] },
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { display: true, position: 'top', labels: { color: textColor, font: { size: 14 } } }, tooltip: { mode: 'index', intersect: false, backgroundColor: 'rgba(0, 0, 0, 0.8)', titleFont: { size: 14 }, bodyFont: { size: 13 }, padding: 12 } },
@@ -891,13 +1084,20 @@ function renderDistributionChart(data) {
         });
     } else { labels = ['暂无数据']; counts = [0]; }
 
-    const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#0f172a';
-    const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--border-color').trim() || 'rgba(0, 0, 0, 0.05)';
+    const styles = getComputedStyle(document.documentElement);
+    const textColor = styles.getPropertyValue('--text-primary').trim() || '#243237';
+    const gridColor = styles.getPropertyValue('--border-color').trim() || 'rgba(62, 91, 91, 0.14)';
+    const palette = [
+        styles.getPropertyValue('--primary-color').trim() || '#6f9dab',
+        styles.getPropertyValue('--coral').trim() || '#d99b91',
+        styles.getPropertyValue('--mint').trim() || '#cee1c8',
+        styles.getPropertyValue('--cyan').trim() || '#b8d8d4',
+    ];
 
     const ctx = canvas.getContext('2d');
     distributionChart = new Chart(ctx, {
         type: 'bar',
-        data: { labels, datasets: [{ label: '记忆数量', data: counts, backgroundColor: ['rgba(37, 99, 235, 0.8)', 'rgba(249, 115, 22, 0.8)', 'rgba(16, 185, 129, 0.8)', 'rgba(239, 68, 68, 0.8)', 'rgba(245, 158, 11, 0.8)', 'rgba(6, 182, 212, 0.8)', 'rgba(236, 72, 153, 0.8)', 'rgba(20, 184, 166, 0.8)', 'rgba(251, 146, 60, 0.8)', 'rgba(59, 130, 246, 0.8)'], borderColor: ['rgb(37, 99, 235)', 'rgb(249, 115, 22)', 'rgb(16, 185, 129)', 'rgb(239, 68, 68)', 'rgb(245, 158, 11)', 'rgb(6, 182, 212)', 'rgb(236, 72, 153)', 'rgb(20, 184, 166)', 'rgb(251, 146, 60)', 'rgb(59, 130, 246)'], borderWidth: 2 }] },
+        data: { labels, datasets: [{ label: '记忆数量', data: counts, backgroundColor: counts.map((_, index) => palette[index % palette.length]), borderColor: 'transparent', borderWidth: 0, borderRadius: 5, borderSkipped: false }] },
         options: {
             responsive: true, maintainAspectRatio: false,
             plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(0, 0, 0, 0.8)', titleFont: { size: 14 }, bodyFont: { size: 13 }, padding: 12 } },
@@ -910,14 +1110,14 @@ function renderDistributionChart(data) {
 }
 
 function showStatisticsError(message) {
-    const container = document.getElementById('statistics-content');
+    const container = document.getElementById('top-sessions-list');
     if (!container) return;
 
     const wrapper = document.createElement('div');
     wrapper.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
 
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
 
@@ -926,7 +1126,7 @@ function showStatisticsError(message) {
     btn.textContent = '重试'; btn.onclick = () => loadStatistics();
 
     wrapper.appendChild(p); wrapper.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(wrapper);
+    container.innerHTML = ''; container.appendChild(wrapper); refreshIcons();
 }
 
 // ==================== 系统配置页面 ====================
@@ -975,7 +1175,7 @@ function renderConfigForm(config) {
         if (typeof value === 'boolean') {
             const badge = document.createElement('span');
             badge.className = 'config-badge ' + (value ? 'config-badge-true' : 'config-badge-false');
-            badge.textContent = value ? '✓ 开启' : '✗ 关闭';
+            badge.textContent = value ? '启用' : '停用';
             valueEl.appendChild(badge);
         } else if (typeof value === 'number') {
             valueEl.className += ' config-value-number';
@@ -1017,7 +1217,7 @@ function showConfigError(message) {
     wrapper.style.cssText = 'padding: 2rem; text-align: center; color: var(--danger-color);';
 
     const p = document.createElement('p');
-    const icon = document.createElement('i'); icon.className = 'ti ti-alert-circle';
+    const icon = document.createElement('span'); icon.appendChild(createIconElement('circle-alert'));
     p.appendChild(icon);
     p.appendChild(document.createTextNode(' ' + message));
 
@@ -1026,7 +1226,7 @@ function showConfigError(message) {
     btn.textContent = '重试'; btn.onclick = () => loadConfig();
 
     wrapper.appendChild(p); wrapper.appendChild(btn);
-    container.innerHTML = ''; container.appendChild(wrapper);
+    container.innerHTML = ''; container.appendChild(wrapper); refreshIcons();
 }
 
 // ==================== 全局导出 ====================
@@ -1052,6 +1252,7 @@ window.vectorSearchMemories = vectorSearchMemories;
 window.clearFilters = clearFilters;
 window.toggleMemorySelection = toggleMemorySelection;
 window.toggleSelectAll = toggleSelectAll;
+window.clearMemorySelection = clearMemorySelection;
 window.batchDeleteMemories = batchDeleteMemories;
 window.deleteMemory = deleteMemory;
 window.viewMemoryDetail = viewMemoryDetail;

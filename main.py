@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     "Mnemosyne",
     "lxfight",
     "一个AstrBot插件，实现基于RAG技术的长期记忆功能。",
-    "2.1.6",
+    "2.2.0",
     "https://github.com/lxfight/astrbot_plugin_mnemosyne",
 )
 class Mnemosyne(Star):

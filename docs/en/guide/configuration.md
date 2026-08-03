@@ -35,11 +35,15 @@ See [Database Options](/en/guide/database) for backend guidance.
 | `num_pairs` | Conversation rounds required before automatic summarization. | `5` |
 | `top_k` | Number of memories returned by retrieval. | `3` |
 | `contexts_memory_len` | Number of long-term memories injected into context. | `3` |
-| `memory_injection_method` | Inject memory into the user prompt or system prompt. | `user_prompt` |
+| `memory_injection_method` | Use the user prompt, the LLM system prompt, or a separate system message. | `user_prompt` |
 | `memory_injection_position` | Inject before or after the active prompt. | `prepend` |
+| `summary_fallback_provider_id` | Retry with this provider when the primary summarizer fails or returns empty text. | Empty |
+| `summary_speaker_mapping_prompt` | Constrain `user`, `assistant`, and first-person ownership with session and speaker variables. | Built-in mapping |
 | `score_threshold` | Filter out memories below this similarity score. | `0.0` |
 
 If memories become too noisy, lower `top_k`, increase `score_threshold`, or reduce `contexts_memory_len`.
+
+`memory_injection_position` controls placement for both `user_prompt` and `system_prompt`. `insert_system_prompt` creates a separate system message and may reduce prompt-cache hits on some models; prefer the first two modes when cache stability matters.
 
 ## Filters
 

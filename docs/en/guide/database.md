@@ -35,7 +35,7 @@ If `persist_directory` is empty, Mnemosyne uses the default plugin data path. Se
 Milvus is suitable for existing Milvus deployments or larger datasets. Install the optional dependency first:
 
 ```bash
-uv pip install 'pymilvus[milvus_lite]>=2.5.4,<3.0.0'
+uv pip install 'pymilvus[milvus_lite]>=2.6.0,<3.0.0'
 ```
 
 Milvus Lite example:

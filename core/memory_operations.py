@@ -64,6 +64,14 @@ _TURN_MARKER_MAX_ENTRIES = 4096
 _INJECTION_COUNTER_MAX_SESSIONS = 2048
 _LAST_USER_TURN_MAX_SESSIONS = 2048
 _MAX_RETAINED_TOOL_CONTEXT_MESSAGES = 8
+DEFAULT_SUMMARY_SPEAKER_MAPPING_PROMPT = (
+    "说话人映射：assistant 表示当前会话正在运行的人格角色"
+    "（persona_id={persona_id}），user 表示当前对话用户"
+    "（sender_name={sender_name}，sender_id={sender_id}，session_id={session_id}）。"
+    "总结中的“我/我的”只能指 assistant 对应的人格角色；"
+    "user 发言中的第一人称应改写为用户昵称、用户或其。"
+    "除非原始对话或人设明确如此自称，不要把 assistant 称为 AI、助手、bot 或模型。"
+)
 
 
 def _get_vector_db(plugin: "Mnemosyne"):
@@ -1718,8 +1726,74 @@ async def _check_summary_prerequisites(plugin: "Mnemosyne", memory_text: str) ->
     return True
 
 
+def _summary_response_has_text(response: Any) -> bool:
+    if isinstance(response, LLMResponse):
+        completion_text = response.completion_text
+    elif isinstance(response, dict):
+        completion_text = response.get("completion_text")
+    else:
+        return False
+    return isinstance(completion_text, str) and bool(completion_text.strip())
+
+
+def _build_summary_speaker_mapping_prompt(
+    plugin: "Mnemosyne",
+    persona_id: str | None,
+    session_id: str,
+    context_history: list[dict] | None,
+) -> str:
+    template = plugin.config.get(
+        "summary_speaker_mapping_prompt",
+        DEFAULT_SUMMARY_SPEAKER_MAPPING_PROMPT,
+    )
+    if not isinstance(template, str) or not template.strip():
+        return ""
+
+    sender_id = "UNKNOWN_USER"
+    sender_name = "用户"
+    for message in reversed(context_history or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict):
+            candidate_id = metadata.get("speaker_id")
+            if isinstance(candidate_id, str) and candidate_id.strip():
+                sender_id = candidate_id.strip()
+        content = message.get("content")
+        if isinstance(content, str):
+            matched = re.match(r"^\[([^\]()]+)\(([^()]*)\)\]:", content)
+            if matched and matched.group(1).strip():
+                sender_name = matched.group(1).strip()
+        break
+
+    replacements = {
+        "{persona_id}": persona_id or DEFAULT_PERSONA_ON_NONE,
+        "{session_id}": session_id,
+        "{sender_id}": sender_id,
+        "{sender_name}": sender_name,
+    }
+    rendered = template
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered.strip()
+
+
+def _get_current_summary_provider(plugin: "Mnemosyne", session_id: str):
+    if plugin.provider:
+        return plugin.provider
+    try:
+        return plugin.context.get_using_provider(umo=session_id)
+    except TypeError:
+        return plugin.context.get_using_provider()
+
+
 async def _get_summary_llm_response(
-    plugin: "Mnemosyne", memory_text: str
+    plugin: "Mnemosyne",
+    memory_text: str,
+    *,
+    persona_id: str | None = None,
+    session_id: str = "",
+    context_history: list[dict] | None = None,
 ) -> LLMResponse | None:
     """
     请求 LLM 进行记忆总结。
@@ -1732,17 +1806,33 @@ async def _get_summary_llm_response(
         LLMResponse 对象，如果请求失败则为 None。
     """
     # logger = plugin.logger
-    llm_provider = plugin.provider
-    # TODO: 优化LLM Provider获取逻辑，确保在plugin.provider不可用时能正确回退到当前使用的Provider
+    providers: list[tuple[str, Any]] = []
     try:
-        if not llm_provider:
-            # 如果plugin.provider不正确，在这时候，使用当前使用的LLM服务商，避免错误
-            llm_provider = plugin.context.get_using_provider()
-            if not llm_provider:
-                logger.error("无法获取用于总结记忆的 LLM Provider。")
-                return None
+        primary_provider = _get_current_summary_provider(plugin, session_id)
+        if primary_provider:
+            providers.append(("主", primary_provider))
     except Exception as e:
         logger.error(f"获取 LLM Provider 时出错: {e}", exc_info=True)
+
+    fallback_provider_id = plugin.config.get("summary_fallback_provider_id", "")
+    if isinstance(fallback_provider_id, str) and fallback_provider_id.strip():
+        try:
+            fallback_provider = plugin.context.get_provider_by_id(
+                fallback_provider_id.strip()
+            )
+            if fallback_provider and all(
+                fallback_provider is not provider for _, provider in providers
+            ):
+                providers.append(("备用", fallback_provider))
+            elif not fallback_provider:
+                logger.warning(
+                    f"未找到备用总结 Provider: {fallback_provider_id.strip()}"
+                )
+        except Exception as e:
+            logger.error(f"获取备用总结 Provider 时出错: {e}", exc_info=True)
+
+    if not providers:
+        logger.error("无法获取用于总结记忆的 LLM Provider。")
         return None
 
     long_memory_prompt = plugin.config.get(
@@ -1770,16 +1860,38 @@ async def _get_summary_llm_response(
                 }
             )
 
-        # M24 修复: 添加 text_chat 方法的类型忽略
-        llm_response = await llm_provider.text_chat(  # type: ignore
-            prompt=memory_text,
-            contexts=summary_contexts,
-            **summary_llm_config,
+        speaker_mapping = _build_summary_speaker_mapping_prompt(
+            plugin,
+            persona_id,
+            session_id,
+            context_history,
         )
-        logger.debug(f"LLM 总结响应原始数据: {llm_response}")
-        return llm_response
+        if speaker_mapping:
+            summary_contexts.append(
+                {"role": "system", "content": speaker_mapping}
+            )
+
+        for provider_kind, llm_provider in providers:
+            try:
+                llm_response = await llm_provider.text_chat(  # type: ignore
+                    prompt=memory_text,
+                    contexts=summary_contexts,
+                    **summary_llm_config,
+                )
+                logger.debug(
+                    f"{provider_kind} LLM 总结响应原始数据: {llm_response}"
+                )
+                if _summary_response_has_text(llm_response):
+                    return llm_response
+                logger.warning(f"{provider_kind}总结 Provider 返回空内容。")
+            except Exception as e:
+                logger.error(
+                    f"{provider_kind}总结 Provider 请求失败: {e}",
+                    exc_info=True,
+                )
+        return None
     except Exception as e:
-        logger.error(f"LLM 总结请求失败: {e}", exc_info=True)
+        logger.error(f"构造总结请求时失败: {e}", exc_info=True)
         return None
 
 
@@ -1946,7 +2058,13 @@ async def handle_summary_long_memory(
 
     try:
         # 1. 请求 LLM 进行总结
-        llm_response = await _get_summary_llm_response(plugin, memory_text)
+        llm_response = await _get_summary_llm_response(
+            plugin,
+            memory_text,
+            persona_id=persona_id,
+            session_id=session_id,
+            context_history=context_history,
+        )
         if not llm_response:
             return False
 

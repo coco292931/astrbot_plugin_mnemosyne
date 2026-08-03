@@ -56,6 +56,28 @@ class VectorDatabase(ABC):
         """
         pass
 
+    def update(
+        self,
+        collection_name: str,
+        record_id: str,
+        data: dict[str, Any],
+    ) -> VectorInsertResult:
+        """更新单条记录；不支持原生更新的后端应显式抛出。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support in-place updates"
+        )
+
+    def get_by_id(
+        self,
+        collection_name: str,
+        record_id: str,
+        output_fields: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """按数据库原生 ID 获取单条记录。"""
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support direct ID lookup"
+        )
+
     @abstractmethod
     def query(
         self,
